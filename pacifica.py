@@ -1,7 +1,7 @@
 import time
 import math
 from rpi_ws281x import PixelStrip, Color
-
+from animations import set_pixel, set_all
 # Utility functions for calculating beat-based oscillations and scaling
 def beatsin16(beats_per_minute, lowest=0, highest=65535, timebase=0, phase_offset=0):
     beat = (time.time() * beats_per_minute / 60.0) + phase_offset
@@ -53,7 +53,7 @@ def color_from_palette(palette, index, brightness, blend):
 # Function to fill the entire strip with a solid color
 def fill_solid(strip, count, color):
     for i in range(count):
-        strip.setPixelColor(i, color)
+        set_all(strip, color[0], color[1], color[2])
 
 # Main function to run the Pacifica effect
 def pacifica(strip, effect_stop_event):
