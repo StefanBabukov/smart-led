@@ -1,10 +1,14 @@
 import time
 import random
 import math
+import ctypes
 from threading import Thread, Event
 from gpiozero import Button
 from rpi_ws281x import PixelStrip, Color
 import evdev
+from pacifica import pacifica
+ 
+animations_enabled = True  
 
 # LED strip configuration
 LED_COUNT = 300        # Number of LED pixels.
@@ -16,9 +20,9 @@ LED_INVERT = False     # True to invert the signal (when using NPN transistor le
 LED_CHANNEL = 0        # 0 or 1
 effect_stop_event = Event()
 
-# Initialize variables
-selected_effect = 0
+selected_effect = -1
 current_command = 0
+current_effect_thread = None
 
 # Set up the LED strip
 strip = PixelStrip(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS, LED_CHANNEL)
@@ -35,13 +39,20 @@ def get_ir_device():
 
 ir_device = get_ir_device()
 
+# Debounce settings
+DEBOUNCE_DELAY = 0.2  # 200 milliseconds
+last_command_time = 0
+
 def handle_ir():
-    global current_command
+    global current_command, last_command_time
     while True:
         event = ir_device.read_one()
         if event and event.value:
-            current_command = event.value
-            print("Received command", event.value)
+            current_time = time.time()
+            if current_time - last_command_time > DEBOUNCE_DELAY:
+                current_command = event.value
+                print("Received command", event.value)
+                last_command_time = current_time
 
 def set_pixel(pixel, red, green, blue):
     strip.setPixelColor(pixel, Color(red, green, blue))
@@ -154,12 +165,27 @@ def twinkle(red, green, blue, count, speed_delay, only_one):
 @run_forever
 def twinkle_random(count, speed_delay, only_one):
     set_all(0, 0, 0)
+    used_indices = []
+
     for _ in range(count):
-        set_pixel(random.randint(0, LED_COUNT-1), random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+        if len(used_indices) >= LED_COUNT:
+            break  # All LEDs have been used
+
+        # Find a new random index not used before
+        while True:
+            index = random.randint(0, LED_COUNT-1)
+            if index not in used_indices:
+                break
+
+        used_indices.append(index)
+        set_pixel(index, random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
         strip.show()
         time.sleep(speed_delay / 1000.0)
+
         if only_one:
             set_all(0, 0, 0)
+            used_indices = []  # Reset used indices if only one LED should be lit at a time
+
     time.sleep(speed_delay / 1000.0)
 
 @run_forever
@@ -176,10 +202,16 @@ def snow_sparkle(red, green, blue, sparkle_delay, speed_delay):
     set_all(red, green, blue)
     for _ in range(LED_COUNT):
         pixel = random.randint(0, LED_COUNT-1)
+        pixel2 = random.randint(0, LED_COUNT-1)
+
         set_pixel(pixel, 255, 255, 255)
+        set_pixel(pixel2, 255, 255, 255)
+
         strip.show()
         time.sleep(sparkle_delay / 1000.0)
         set_pixel(pixel, red, green, blue)
+        set_pixel(pixel2, red, green, blue)
+
         strip.show()
         time.sleep(speed_delay / 1000.0)
 
@@ -321,54 +353,82 @@ def meteor_rain(red, green, blue, meteor_size, meteor_trail_decay, meteor_random
         strip.show()
         time.sleep(speed_delay / 1000.0)
 
+def terminate_thread(thread):
+    if not thread.is_alive():
+        return
+
+    exc = ctypes.py_object(SystemExit)
+    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread.ident), exc)
+    if res == 0:
+        raise ValueError("Thread id not found")
+    elif res > 1:
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(thread.ident, None)
+        raise SystemError("PyThreadState_SetAsyncExc failed")
+
 def run_effect(selected_effect):
+    print('in run effect')
+    global current_effect_thread
+    if not animations_enabled:
+        effect_stop_event.set()  # Stop any running effect if animations are disabled
+        if current_effect_thread:
+            terminate_thread(current_effect_thread)  # Terminate the current effect thread
+        set_all(0, 0, 0)  # Ensure all LEDs are turned off
+        return
+
+    effect_stop_event.set()  # Signal the current effect to stop
+    if current_effect_thread:
+        terminate_thread(current_effect_thread)  # Terminate the current effect thread
+
     effect_stop_event.clear()  # Clear the event to start a new effect
     print(f"Running effect: {selected_effect}")
     effects = {
-        0: lambda: rgb_loop(),
-        1: lambda: fade_in_out(255, 0, 0),
+        0: lambda: fade_in_out(255, 0, 0),
+        1: lambda: pacifica(strip, effect_stop_event),  # Integrate pacifica as effect 0
         2: lambda: strobe(255, 255, 255, 10, 50, 1000),
         3: lambda: halloween_eyes(255, 0, 0, 1, 4, True, random.randint(5, 50), random.randint(50, 150), random.randint(1000, 10000)),
         4: lambda: cylon_bounce(255, 0, 0, 4, 10, 50),
         5: lambda: cylon_bounce(255, 0, 0, 8, 10, 50),
         6: lambda: twinkle(255, 0, 0, 10, 100, False),
-        7: lambda: twinkle_random(20, 100, False),
+        7: lambda: twinkle_random(300, 100, False),
         8: lambda: sparkle(255, 255, 255, 0),
         9: lambda: snow_sparkle(16, 16, 16, 20, random.randint(100, 1000)),
         10: lambda: running_lights(255, 0, 0, 50),
         11: lambda: color_wipe(0, 255, 0, 50),
-        12: lambda: rainbow_cycle(50),
+        12: lambda: rainbow_cycle(20),  # Add argument for rainbow_cycle
         13: lambda: theater_chase(255, 0, 0, 50),
-        14: lambda: theater_chase_rainbow(50),
+        14: lambda: theater_chase_rainbow(50),  # Add argument for theater_chase_rainbow
         15: lambda: fire(55, 120, 15),
         16: lambda: bouncing_colored_balls(1, [(255, 0, 0)], False),
         17: lambda: bouncing_colored_balls(20, [(255, 0, 0), (255, 255, 255), (0, 0, 255)], False),
         18: lambda: meteor_rain(255, 255, 255, 10, 64, True, 30),
     }
     effect_function = effects.get(selected_effect)
-    effect_thread = Thread(target=effect_function)
-    effect_thread.daemon = True
-    effect_thread.start()
+    current_effect_thread = Thread(target=effect_function)
+    current_effect_thread.daemon = True
+    current_effect_thread.start()
 
 def ir_listener():
-    global current_command
+    global current_command, selected_effect, animations_enabled
     print('IR Listener thread started')
     selected_effect = 0
     while True:
         if current_command:
-            print(f"Current command: {current_command} type of command {(current_command == 90)}")
+            print(f"Current command: {current_command}")
             if current_command == 90:  # NEXT
                 selected_effect = (selected_effect + 1) % 19
-                print('should call next effect', selected_effect)
-
-                effect_stop_event.set()  # Stop current effect
-                time.sleep(0.1)  # Small delay to ensure the current effect stops
                 run_effect(selected_effect)
             elif current_command == 8:  # PREVIOUS
                 selected_effect = (selected_effect - 1) % 19
-                effect_stop_event.set()  # Stop current effect
-                time.sleep(0.1)  # Small delay to ensure the current effect stops
                 run_effect(selected_effect)
+            elif current_command == 28:  # TOGGLE ANIMATIONS ON/OFF
+                animations_enabled = not animations_enabled
+                if not animations_enabled:
+                    effect_stop_event.set()  # Stop any running effect
+                    if current_effect_thread:
+                        terminate_thread(current_effect_thread)  # Terminate the current effect thread
+                    set_all(0, 0, 0)  # Ensure all LEDs are turned off
+                else:
+                    run_effect(selected_effect)
             current_command = 0
             time.sleep(0.1)
 
