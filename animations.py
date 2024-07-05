@@ -3,23 +3,10 @@ import random
 import math
 from threading import Event
 from rpi_ws281x import Color
+from led_operations import set_pixel, set_all, fade_to_black
 
 effect_stop_event = Event()
 
-def set_pixel(strip, pixel, red, green, blue):
-    strip.setPixelColor(pixel, Color(red, green, blue))
-
-def set_all(strip, red, green, blue):
-    for i in range(strip.numPixels()):
-        set_pixel(strip, i, red, green, blue)
-    strip.show()
-
-def fade_to_black(strip, led_no, fade_value):
-    color = strip.getPixelColor(led_no)
-    r = max((color >> 16) - fade_value, 0)
-    g = max((color >> 8 & 0xFF) - fade_value, 0)
-    b = max((color & 0xFF) - fade_value, 0)
-    set_pixel(strip, led_no, r, g, b)
 
 def run_forever(effect):
     def wrapper(*args, **kwargs):

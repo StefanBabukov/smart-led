@@ -8,6 +8,8 @@ import evdev
 from pacifica import pacifica
 from animations import *
 from static_mode import StaticMode  # Import StaticMode class
+from fire import fire_animation
+from color_bounce import color_bounce  # Import the new wave animation
 
 animations_enabled = True  
 
@@ -74,17 +76,7 @@ def terminate_thread(thread):
         ctypes.pythonapi.PyThreadState_SetAsyncExc(thread.ident, None)
         raise SystemError("PyThreadState_SetAsyncExc failed")
 
-def run_effect(selected_effect):
-    print('in run effect')
-    global current_effect_thread
-
-    effect_stop_event.set()  # Signal the current effect to stop
-    if current_effect_thread:
-        terminate_thread(current_effect_thread)  # Terminate the current effect thread
-
-    effect_stop_event.clear()  # Clear the event to start a new effect
-    print(f"Running effect: {selected_effect}")
-    effects = {
+effects = {
         0: lambda: fade_in_out(strip, 255, 0, 0),
         1: lambda: pacifica(strip, effect_stop_event),  # Integrate pacifica as effect 0
         2: lambda: strobe(strip, 255, 255, 255, 10, 50, 1000),
@@ -104,7 +96,21 @@ def run_effect(selected_effect):
         16: lambda: bouncing_colored_balls(strip, 1, [(255, 0, 0)], False),
         17: lambda: bouncing_colored_balls(strip, 20, [(255, 0, 0), (255, 255, 255), (0, 0, 255)], False),
         18: lambda: meteor_rain(strip, 255, 255, 255, 10, 64, True, 30),
+        19: lambda: fire_animation(strip),
+        # 20: lambda: color_bounce(strip, (255, 0, 0), (0, 255, 0), 500),
     }
+
+def run_effect(selected_effect):
+    print('in run effect')
+    global current_effect_thread
+
+    effect_stop_event.set()  # Signal the current effect to stop
+    if current_effect_thread:
+        terminate_thread(current_effect_thread)  # Terminate the current effect thread
+
+    effect_stop_event.clear()  # Clear the event to start a new effect
+    print(f"Running effect: {selected_effect}")
+
     effect_function = effects.get(selected_effect)
     current_effect_thread = Thread(target=effect_function)
     current_effect_thread.daemon = True
@@ -112,12 +118,12 @@ def run_effect(selected_effect):
 
 def next_effect():
     global selected_effect
-    selected_effect = (selected_effect + 1) % 19
+    selected_effect = (selected_effect + 1) % len(effects)
     run_effect(selected_effect)
 
 def previous_effect():
     global selected_effect
-    selected_effect = (selected_effect - 1) % 19
+    selected_effect = (selected_effect - 1) % len(effects)
     run_effect(selected_effect)
 
 def stop_animations():
@@ -161,8 +167,6 @@ def ir_listener():
                     animations_enabled = not animations_enabled
                     if not animations_enabled:
                         stop_animations()
-                    else:
-                        run_effect(selected_effect)
                 case 24:  # UP
                     if 'up' in mode_commands[current_mode]:
                         mode_commands[current_mode]['up']()
