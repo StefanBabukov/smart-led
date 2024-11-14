@@ -2,7 +2,6 @@ import random
 import time
 from rpi_ws281x import Color
 from led_operations import set_pixel, set_all, fade_to_black
-from animations import effect_stop_event
 
 COOLING = 20
 SPARKING = 120
@@ -24,7 +23,7 @@ def fire_animation(strip):
     num_leds = strip.numPixels()
     heat = [0] * (num_leds)  # Increase the heat array size
 
-    while not effect_stop_event.is_set():
+    while True:
         for i in range(len(heat)):
             heat[i] = max(heat[i] - random.randint(0, ((COOLING * 10) // len(heat)) + 2), 0)
 

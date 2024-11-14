@@ -21,3 +21,12 @@ def fade_to_black(strip, led_no, fade_value):
     g = max((color >> 8 & 0xFF) - fade_value, 0)
     b = max((color & 0xFF) - fade_value, 0)
     set_pixel(strip, led_no, r, g, b)
+
+def get_pixel(strip, led_no):
+    """Retrieve the RGB color of a specified LED."""
+    color = strip.getPixelColor(led_no)
+    r = (color >> 16) & 0xFF
+    g = (color >> 8) & 0xFF
+    b = color & 0xFF
+    return (r, g, b)
+

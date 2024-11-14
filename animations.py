@@ -7,10 +7,9 @@ from led_operations import set_pixel, set_all, fade_to_black
 
 effect_stop_event = Event()
 
-
 def run_forever(effect):
     def wrapper(*args, **kwargs):
-        while not effect_stop_event.is_set():
+        while True:
             effect(*args, **kwargs)
     return wrapper
 
@@ -168,6 +167,7 @@ def running_lights(strip, red, green, blue, wave_delay):
 
 @run_forever
 def color_wipe(strip, red, green, blue, speed_delay):
+    print('running color wipe')
     for i in range(strip.numPixels()):
         set_pixel(strip, i, red, green, blue)
         strip.show()
@@ -192,26 +192,26 @@ def wheel(pos):
         pos -= 170
         return [0, pos * 3, 255 - pos * 3]
 
-@run_forever
-def theater_chase(strip, red, green, blue, speed_delay):
-    for j in range(10):  # do 10 cycles of chasing
-        for q in range(3):
-            for i in range(0, strip.numPixels(), 3):
-                set_pixel(strip, i + q, red, green, blue)
-            strip.show()
-            time.sleep(speed_delay / 1000.0)
-            for i in range(0, strip.numPixels(), 3):
-                set_pixel(strip, i + q, 0, 0, 0)
+def theater_chase(strip, red, green, blue):
+    while True:
+        for j in range(10):  # do 10 cycles of chasing
+            for q in range(3):
+                for i in range(0, strip.numPixels(), 3):
+                    set_pixel(strip, i + q, red, green, blue)
+                strip.show()
+                time.sleep(0.1)
+                for i in range(0, strip.numPixels(), 3):
+                    set_pixel(strip, i + q, 0, 0, 0)
 
 @run_forever
-def theater_chase_rainbow(strip, speed_delay):
+def theater_chase_rainbow(strip):
     for j in range(256):  # cycle all 256 colors in the wheel
         for q in range(3):
             for i in range(0, strip.numPixels(), 3):
                 color = wheel((i + j) % 255)
                 set_pixel(strip, i + q, color[0], color[1], color[2])
             strip.show()
-            time.sleep(speed_delay / 1000.0)
+            time.sleep(0.05)
             for i in range(0, strip.numPixels(), 3):
                 set_pixel(strip, i + q, 0, 0, 0)
 
@@ -290,4 +290,4 @@ def meteor_rain(strip, red, green, blue, meteor_size, meteor_trail_decay, meteor
             if (i - j < strip.numPixels()) and (i - j >= 0):
                 set_pixel(strip, i - j, red, green, blue)
         strip.show()
-        time.sleep(speed_delay / 1000.0)
+        time.sleep(0.001)

@@ -78,8 +78,8 @@ def terminate_thread(thread):
 
 effects = {
         0: lambda: fade_in_out(strip, 255, 0, 0),
-        1: lambda: pacifica(strip, effect_stop_event),  # Integrate pacifica as effect 0
-        2: lambda: strobe(strip, 255, 255, 255, 10, 50, 1000),
+        1: lambda: pacifica(strip),  # Integrate pacifica as effect 0
+        # 2: lambda: strobe(strip, 255, 255, 255, 10, 50, 1000),
         3: lambda: halloween_eyes(strip, 255, 0, 0, 1, 4, True, random.randint(5, 50), random.randint(50, 150), random.randint(1000, 10000)),
         4: lambda: cylon_bounce(strip, 255, 0, 0, 4, 10, 50),
         5: lambda: cylon_bounce(strip, 255, 0, 0, 8, 10, 50),
@@ -90,14 +90,14 @@ effects = {
         10: lambda: running_lights(strip, 255, 0, 0, 50),
         11: lambda: color_wipe(strip, 0, 255, 0, 50),
         12: lambda: rainbow_cycle(strip, 20),  # Add argument for rainbow_cycle
-        13: lambda: theater_chase(strip, 255, 0, 0, 50),
-        14: lambda: theater_chase_rainbow(strip, 50),  # Add argument for theater_chase_rainbow
+        13: lambda: theater_chase(strip, 255, 0, 0),
+        14: lambda: theater_chase_rainbow(strip),  # Add argument for theater_chase_rainbow
         15: lambda: fire(strip, 55, 120, 15),
         16: lambda: bouncing_colored_balls(strip, 1, [(255, 0, 0)], False),
         17: lambda: bouncing_colored_balls(strip, 20, [(255, 0, 0), (255, 255, 255), (0, 0, 255)], False),
         18: lambda: meteor_rain(strip, 255, 255, 255, 10, 64, True, 30),
         19: lambda: fire_animation(strip),
-        # 20: lambda: color_bounce(strip, (255, 0, 0), (0, 255, 0), 500),
+        20: lambda: wheel(strip, (255, 0, 0), (0, 255, 0), 500),
     }
 
 def run_effect(selected_effect):
