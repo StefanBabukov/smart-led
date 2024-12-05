@@ -1,12 +1,13 @@
 import random
-import time
-from rpi_ws281x import Color
-from led_operations import set_pixel, set_all, fade_to_black
-
+from led_operations import set_pixel
 COOLING = 20
 SPARKING = 120
 
-# Define a more colorful fire palette
+# Keep state in a dictionary so it's not reset every call
+fire_state = {
+    'heat': None
+}
+
 PALETTE = [
     (0, 0, 0), (32, 0, 0), (64, 0, 0), (96, 0, 0),
     (128, 0, 0), (160, 0, 0), (192, 0, 0), (224, 0, 0),
@@ -19,24 +20,28 @@ PALETTE = [
     (0, 0, 255)
 ]
 
-def fire_animation(strip):
+def fire_step(strip, cooling=COOLING, sparking=SPARKING, speed_delay=5):
     num_leds = strip.numPixels()
-    heat = [0] * (num_leds)  # Increase the heat array size
+    if fire_state['heat'] is None:
+        fire_state['heat'] = [0] * num_leds
 
-    while True:
-        for i in range(len(heat)):
-            heat[i] = max(heat[i] - random.randint(0, ((COOLING * 10) // len(heat)) + 2), 0)
+    heat = fire_state['heat']
+    # Step 1. Cool down
+    for i in range(num_leds):
+        heat[i] = max(heat[i] - random.randint(0, ((cooling * 10) // num_leds) + 2), 0)
 
-        for k in range(len(heat) - 1, 1, -1):
-            heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) // 3
+    # Step 2. Drift heat upward
+    for k in range(num_leds - 1, 1, -1):
+        heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) // 3
 
-        if random.randint(0, 255) < SPARKING:
-            y = random.randint(0, 7)
-            heat[y] = min(heat[y] + random.randint(160, 255), 255)
+    # Step 3. Random spark near bottom
+    if random.randint(0, 255) < sparking:
+        y = random.randint(0, min(7, num_leds - 1))
+        heat[y] = min(heat[y] + random.randint(160, 255), 255)
 
-        for j in range(num_leds):
-            colorindex = (heat[j] * (len(PALETTE) - 1)) // 255
-            color = PALETTE[colorindex]
-            set_pixel(strip, j, color[0], color[1], color[2])
-
-        strip.show()
+    # Step 4. Map heat to colors
+    for j in range(num_leds):
+        colorindex = (heat[j] * (len(PALETTE) - 1)) // 255
+        color = PALETTE[colorindex]
+        set_pixel(strip, j, color[0], color[1], color[2])
+    

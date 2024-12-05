@@ -1,31 +1,40 @@
-from rpi_ws281x import PixelStrip
-from led_operations import set_pixel, set_all, blend_colors
-from animations import  run_forever
+from led_operations import set_pixel, set_all
 import time
 
-@run_forever
-def color_bounce(strip, color1, color2, speed_delay):
-    num_leds = strip.numPixels()
-    pos1, pos2 = 0, num_leds - 1
-    direction = 1
+color_bounce_state = {
+    'pos1': 0,
+    'pos2': 0,
+    'direction': 1,
+    'color1': (255,0,0),
+    'color2': (0,0,255),
+    'initialized': False
+}
 
+def color_bounce_step(strip, c1=(255,0,0), c2=(0,0,255), speed_delay=10):
+    st = color_bounce_state
+    num_leds = strip.numPixels()
+    if not st['initialized']:
+        st['pos1'] = 0
+        st['pos2'] = num_leds - 1
+        st['color1'] = c1
+        st['color2'] = c2
+        set_all(strip, 0, 0, 0)
+        st['initialized'] = True
+
+    # Clear previous positions
     set_all(strip, 0, 0, 0)
 
+    # Move positions
+    st['pos1'] += st['direction']
+    st['pos2'] -= st['direction']
 
-    if pos1 == pos2:
-        mixed_color = blend_colors(color1, color2)
-        set_pixel(strip, pos1, *mixed_color)
+    # Bounce?
+    if st['pos1'] >= num_leds - 1 or st['pos1'] <= 0:
+        st['direction'] *= -1
+        # Shift colors slightly
+        st['color1'] = ((st['color1'][0] + 10) % 256, (st['color1'][1] + 10) % 256, (st['color1'][2] + 10) % 256)
+        st['color2'] = ((st['color2'][0] + 10) % 256, (st['color2'][1] + 10) % 256, (st['color2'][2] + 10) % 256)
 
-    # time.sleep(speed_delay / 1000.0)
-
-    if pos1 == num_leds - 1 or pos1 == 0:
-        direction *= -1
-        color1 = (color1[0] + 10) % 256, (color1[1] + 10) % 256, (color1[2] + 10) % 256
-        color2 = (color2[0] + 10) % 256, (color2[1] + 10) % 256, (color2[2] + 10) % 256
-
-    pos1 += direction
-    pos2 -= direction
-    
-    set_pixel(strip, pos1, *color1)
-    set_pixel(strip, pos2, *color2)
-    strip.show()
+    # Set pixels at positions
+    set_pixel(strip, st['pos1'], *st['color1'])
+    set_pixel(strip, st['pos2'], *st['color2'])

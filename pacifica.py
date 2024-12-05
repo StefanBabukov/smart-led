@@ -1,9 +1,8 @@
 import time
 import math
-from rpi_ws281x import PixelStrip, Color
+from rpi_ws281x import Color
 from led_operations import set_pixel, get_pixel
 
-# Define the palettes
 pacifica_palette_1 = [
     (0x00, 0x05, 0x07), (0x00, 0x04, 0x09), (0x00, 0x03, 0x0B), (0x00, 0x03, 0x0D),
     (0x00, 0x02, 0x10), (0x00, 0x02, 0x12), (0x00, 0x01, 0x14), (0x00, 0x01, 0x17),
@@ -25,35 +24,8 @@ pacifica_palette_3 = [
     (0x00, 0x1C, 0x70), (0x00, 0x20, 0x80), (0x10, 0x40, 0xBF), (0x20, 0x60, 0xFF)
 ]
 
-# Helper functions
 def millis():
     return int(round(time.time() * 1000))
-
-def beat16(bpm, time_base=0):
-    ms = millis() - time_base
-    beat = (ms * bpm * 65536) // 60000
-    return beat % 65536
-
-def beatsin16(bpm, minimum=0, maximum=65535, time_base=0, phase_offset=0):
-    beat = beat16(bpm, time_base)
-    beat = (beat + phase_offset) % 65536
-    sine = sin16(beat)
-    amplitude = (maximum - minimum) // 2
-    value = minimum + amplitude + ((sine * amplitude) >> 15)
-    return value
-
-def beat8(bpm, time_base=0):
-    ms = millis() - time_base
-    beat = (ms * bpm * 256) // 60000
-    return beat % 256
-
-def beatsin8(bpm, minimum=0, maximum=255, time_base=0, phase_offset=0):
-    beat = beat8(bpm, time_base)
-    beat = (beat + phase_offset) % 256
-    sine = sin8(beat)
-    amplitude = (maximum - minimum) // 2
-    value = minimum + amplitude + ((sine - 128) * amplitude) // 127
-    return value
 
 def sin16(x):
     angle = x * (2 * math.pi) / 65536.0
@@ -63,18 +35,25 @@ def sin8(x):
     angle = x * (2 * math.pi) / 256.0
     return int(math.sin(angle) * 127) + 128
 
-def scale16(value, scale):
-    return (value * scale) >> 16
+def beatsin8(bpm, minimum=0, maximum=255, time_base=0, phase_offset=0):
+    beat = ((millis() - time_base) * bpm * 256 // 60000) % 256
+    beat = (beat + phase_offset) % 256
+    amplitude = (maximum - minimum) // 2
+    return minimum + amplitude + ((sin8(beat) - 128) * amplitude) // 127
 
-def scale8(value, scale):
-    return (value * scale) >> 8
+def beatsin16(bpm, minimum=0, maximum=65535, time_base=0, phase_offset=0):
+    beat = ((millis() - time_base) * bpm * 65536 // 60000) & 0xFFFF
+    beat = (beat + phase_offset) & 0xFFFF
+    sine = sin16(beat)
+    amplitude = (maximum - minimum) // 2
+    return minimum + amplitude + ((sine * amplitude) >> 15)
 
-def qadd8(a, b):
-    return min(a + b, 255)
+def beat16(bpm, time_base=0):
+    ms = millis() - time_base
+    return (ms * bpm * 65536) // 60000 % 65536
 
 def color_from_palette(palette, index, brightness, blending=True):
     palette_size = len(palette)
-    # Map index from 0-255 to 0-palette_size
     index = index * (palette_size - 1) / 255.0
     index_low = int(math.floor(index))
     index_high = (index_low + 1) % palette_size
@@ -92,7 +71,12 @@ def color_from_palette(palette, index, brightness, blending=True):
     b = (b * brightness) // 255
     return (r, g, b)
 
-# Main effect functions
+def scale8(value, scale):
+    return (value * scale) >> 8
+
+def qadd8(a, b):
+    return min(a + b, 255)
+
 def pacifica_one_layer(strip, palette, cistart, wavescale, bri, ioff):
     num_leds = strip.numPixels()
     ci = cistart
@@ -101,10 +85,10 @@ def pacifica_one_layer(strip, palette, cistart, wavescale, bri, ioff):
     for i in range(num_leds):
         waveangle = (waveangle + 250) % 65536
         s16 = sin16(waveangle) + 32768
-        cs = scale16(s16, wavescale_half) + wavescale_half
+        cs = ((s16 * wavescale_half) >> 16) + wavescale_half
         ci = (ci + cs) % 65536
         sindex16 = sin16(ci) + 32768
-        sindex8 = sindex16 >> 8  # Convert from 16-bit to 8-bit (0-255)
+        sindex8 = sindex16 >> 8
         c = color_from_palette(palette, sindex8, bri)
         r1, g1, b1 = get_pixel(strip, i)
         r2, g2, b2 = c
@@ -116,12 +100,12 @@ def pacifica_one_layer(strip, palette, cistart, wavescale, bri, ioff):
 def pacifica_add_whitecaps(strip):
     num_leds = strip.numPixels()
     basethreshold = beatsin8(9, 55, 65)
-    wave = beat8(7)
+    wave = ((millis() * 7 * 256) // 60000) % 256
     for i in range(num_leds):
         threshold = scale8(sin8(wave), 20) + basethreshold
         wave = (wave + 7) % 256
         r, g, b = get_pixel(strip, i)
-        l = (r + g + b) // 3  # get average light
+        l = (r + g + b) // 3
         if l > threshold:
             overage = l - threshold
             overage2 = qadd8(overage, overage)
@@ -141,61 +125,51 @@ def pacifica_deepen_colors(strip):
         b = min(b + 7, 255)
         set_pixel(strip, i, r, g, b)
 
-def pacifica(strip):
+# State variables for pacifica
+pacifica_state = {
+    'sCIStart1': 0,
+    'sCIStart2': 0,
+    'sCIStart3': 0,
+    'sCIStart4': 0,
+    'sLastms': millis()
+}
+
+def pacifica_step(strip):
     num_leds = strip.numPixels()
-    sCIStart1 = 0
-    sCIStart2 = 0
-    sCIStart3 = 0
-    sCIStart4 = 0
-    sLastms = millis()
+    ms = millis()
+    deltams = ms - pacifica_state['sLastms']
+    pacifica_state['sLastms'] = ms
 
-    while True:
-        ms = millis()
-        deltams = ms - sLastms
-        sLastms = ms
+    speedfactor1 = beatsin16(1, 179, 269)
+    speedfactor2 = beatsin16(1, 179, 269)
+    deltams1 = (deltams * speedfactor1) // 256
+    deltams2 = (deltams * speedfactor2) // 256
+    deltams21 = (deltams1 + deltams2) // 2
 
-        # Adjusted speed factors to slow down the wave movement
-        speedfactor1 = beatsin16(1, 179, 269)
-        speedfactor2 = beatsin16(1, 179, 269)
-        deltams1 = (deltams * speedfactor1) // 256
-        deltams2 = (deltams * speedfactor2) // 256
-        deltams21 = (deltams1 + deltams2) // 2
+    pacifica_state['sCIStart1'] = (pacifica_state['sCIStart1'] + ((deltams1 * beatsin16(20, 10, 13)) >> 16)) % 65536
+    pacifica_state['sCIStart2'] = (pacifica_state['sCIStart2'] - ((deltams21 * beatsin16(15, 8, 11)) >> 16)) % 65536
+    pacifica_state['sCIStart3'] = (pacifica_state['sCIStart3'] - ((deltams1 * beatsin16(10, 5, 7)) >> 16)) % 65536
+    pacifica_state['sCIStart4'] = (pacifica_state['sCIStart4'] - ((deltams2 * beatsin16(5, 4, 6)) >> 16)) % 65536
 
-        # Adjusted BPM values to slow down color index changes
-        sCIStart1 = (sCIStart1 + ((deltams1 * beatsin16(20, 10, 13)) >> 16)) % 65536
-        sCIStart2 = (sCIStart2 - ((deltams21 * beatsin16(15, 8, 11)) >> 16)) % 65536
-        sCIStart3 = (sCIStart3 - ((deltams1 * beatsin16(10, 5, 7)) >> 16)) % 65536
-        sCIStart4 = (sCIStart4 - ((deltams2 * beatsin16(5, 4, 6)) >> 16)) % 65536
+    background_r = beatsin8(2, 2, 5)
+    background_g = beatsin8(2, 6, 10)
+    background_b = beatsin8(2, 8, 12)
 
-        # Create a dynamic background color that changes over time
-        background_r = beatsin8(2, 2, 5)
-        background_g = beatsin8(2, 6, 10)
-        background_b = beatsin8(2, 8, 12)
+    for i in range(num_leds):
+        set_pixel(strip, i, background_r, background_g, background_b)
 
-        # Apply the dynamic background color
-        for i in range(num_leds):
-            set_pixel(strip, i, background_r, background_g, background_b)
+    pacifica_one_layer(strip, pacifica_palette_1, pacifica_state['sCIStart1'],
+                       beatsin16(1, 11*256, 14*256), beatsin8(1, 70, 130),
+                       (0 - beat16(3)) % 65536)
+    pacifica_one_layer(strip, pacifica_palette_2, pacifica_state['sCIStart2'],
+                       beatsin16(1, 6*256, 9*256), beatsin8(1, 40, 80),
+                       beat16(4))
+    pacifica_one_layer(strip, pacifica_palette_3, pacifica_state['sCIStart3'],
+                       6*256, beatsin8(1, 10, 38),
+                       (0 - beat16(5)) % 65536)
+    pacifica_one_layer(strip, pacifica_palette_3, pacifica_state['sCIStart4'],
+                       5*256, beatsin8(1, 10, 28),
+                       beat16(6))
 
-        # Render each of four layers with adjusted parameters for smoother transitions
-        pacifica_one_layer(strip, pacifica_palette_1, sCIStart1,
-                           beatsin16(1, 11*256, 14*256), beatsin8(1, 70, 130),
-                           (0 - beat16(3)) % 65536)
-        pacifica_one_layer(strip, pacifica_palette_2, sCIStart2,
-                           beatsin16(1, 6*256, 9*256), beatsin8(1, 40, 80),
-                           beat16(4))
-        pacifica_one_layer(strip, pacifica_palette_3, sCIStart3,
-                           6*256, beatsin8(1, 10, 38),
-                           (0 - beat16(5)) % 65536)
-        pacifica_one_layer(strip, pacifica_palette_3, sCIStart4,
-                           5*256, beatsin8(1, 10, 28),
-                           beat16(6))
-            
-
-        # Add brighter 'whitecaps'
-        pacifica_add_whitecaps(strip)
-
-        # Deepen the blues and greens
-        pacifica_deepen_colors(strip)
-
-        strip.show()
-        time.sleep(0.005)  # Slightly increased sleep time for smoother transitions
+    pacifica_add_whitecaps(strip)
+    pacifica_deepen_colors(strip)

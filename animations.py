@@ -1,293 +1,384 @@
 import time
 import random
 import math
-from threading import Event
 from rpi_ws281x import Color
 from led_operations import set_pixel, set_all, fade_to_black
 
-effect_stop_event = Event()
+# State containers for animations
+fade_in_out_state = {'direction': 1, 'brightness': 0}
+running_lights_state = {'position': 0}
+twinkle_state = {'pixels': []}
+twinkle_random_state = {'used_indices': []}
+sparkle_state = {'on_pixel': None, 'timer': 0}
+snow_sparkle_state = {'pixels': [], 'timer': 0, 'base_color': (16,16,16)}
+cylon_state = {'pos': 0, 'forward': True}
+halloween_eyes_state = {'phase': 0, 'start_point':0, 'start_2nd_eye':0, 'params':None, 'fade_step':0}
+color_wipe_state = {'index':0, 'done':False}
+rainbow_cycle_state = {'step': 0}
+theater_chase_state = {'step': 0, 'index':0}
+theater_chase_rainbow_state = {'step':0,'index':0}
+fire_state = {'heat': None}
+bouncing_balls_state = {'initialized': False}
+meteor_rain_state = {'pos':0,'direction':1,'initialized':False}
+wheel_step_state = {'pos':0}  # For wheel_step
 
-def run_forever(effect):
-    def wrapper(*args, **kwargs):
-        while True:
-            effect(*args, **kwargs)
-    return wrapper
+def fade_in_out_step(strip, red, green, blue):
+    st = fade_in_out_state
+    st['brightness'] += st['direction']
+    if st['brightness'] > 255:
+        st['brightness'] = 255
+        st['direction'] = -1
+    elif st['brightness'] < 0:
+        st['brightness'] = 0
+        st['direction'] = 1
 
-@run_forever
-def rgb_loop(strip):
-    for j in range(3):
-        for k in range(256):
-            set_all(strip, k if j == 0 else 0, k if j == 1 else 0, k if j == 2 else 0)
-            time.sleep(0.003)
-        for k in range(255, -1, -1):
-            set_all(strip, k if j == 0 else 0, k if j == 1 else 0, k if j == 2 else 0)
-            time.sleep(0.003)
+    val_r = (st['brightness'] * red) // 255
+    val_g = (st['brightness'] * green) // 255
+    val_b = (st['brightness'] * blue) // 255
+    set_all(strip, val_r, val_g, val_b)
 
-@run_forever
-def fade_in_out(strip, red, green, blue):
-    for k in range(256):
-        set_all(strip, int((k / 256.0) * red), int((k / 256.0) * green), int((k / 256.0) * blue))
-        time.sleep(0.01)
-    for k in range(255, -1, -1):
-        set_all(strip, int((k / 256.0) * red), int((k / 256.0) * green), int((k / 256.0) * blue))
-        time.sleep(0.01)
+# Strobe step as a state machine
+# We simulate a strobe: turn on for a few frames, off for a few frames
+# Params: red, green, blue, strobe_count, flash_delay, end_pause
+strobe_state = {'count':0, 'on':True, 'timer':0, 'params':None}
+def strobe_step(strip, red, green, blue, strobe_count, flash_delay, end_pause):
+    # Initialize parameters if needed
+    st = strobe_state
+    if st['params'] is None:
+        st['params'] = (red, green, blue, strobe_count, flash_delay, end_pause)
+        st['count'] = 0
+        st['on'] = True
+        st['timer'] = 0
 
-@run_forever
-def strobe(strip, red, green, blue, strobe_count, flash_delay, end_pause):
-    for _ in range(strobe_count):
-        set_all(strip, red, green, blue)
-        time.sleep(flash_delay / 1000.0)
-        set_all(strip, 0, 0, 0)
-        time.sleep(flash_delay / 1000.0)
-    time.sleep(end_pause / 1000.0)
-
-@run_forever
-def halloween_eyes(strip, red, green, blue, eye_width, eye_space, fade, steps, fade_delay, end_pause):
-    start_point = random.randint(0, strip.numPixels() - (2 * eye_width) - eye_space)
-    start_2nd_eye = start_point + eye_width + eye_space
-
-    for i in range(eye_width):
-        set_pixel(strip, start_point + i, red, green, blue)
-        set_pixel(strip, start_2nd_eye + i, red, green, blue)
-    strip.show()
-
-    if fade:
-        for j in range(steps, -1, -1):
-            r = (j * (red / steps))
-            g = (j * (green / steps))
-            b = (j * (blue / steps))
-            for i in range(eye_width):
-                set_pixel(strip, start_point + i, int(r), int(g), int(b))
-                set_pixel(strip, start_2nd_eye + i, int(r), int(g), int(b))
-            strip.show()
-            time.sleep(fade_delay / 1000.0)
-
-    set_all(strip, 0, 0, 0)
-    time.sleep(end_pause / 1000.0)
-
-@run_forever
-def cylon_bounce(strip, red, green, blue, eye_size, speed_delay, return_delay):
-    for i in range(strip.numPixels() - eye_size - 2):
-        set_all(strip, 0, 0, 0)
-        set_pixel(strip, i, red // 10, green // 10, blue // 10)
-        for j in range(1, eye_size + 1):
-            set_pixel(strip, i + j, red, green, blue)
-        set_pixel(strip, i + eye_size + 1, red // 10, green // 10, blue // 10)
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-
-    time.sleep(return_delay / 1000.0)
-
-    for i in range(strip.numPixels() - eye_size - 2, -1, -1):
-        set_all(strip, 0, 0, 0)
-        set_pixel(strip, i, red // 10, green // 10, blue // 10)
-        for j in range(1, eye_size + 1):
-            set_pixel(strip, i + j, red, green, blue)
-        set_pixel(strip, i + eye_size + 1, red // 10, green // 10, blue // 10)
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-
-    time.sleep(return_delay / 1000.0)
-
-@run_forever
-def twinkle(strip, red, green, blue, count, speed_delay, only_one):
-    set_all(strip, 0, 0, 0)
-    for _ in range(count):
-        set_pixel(strip, random.randint(0, strip.numPixels() - 1), red, green, blue)
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-        if only_one:
+    red, green, blue, sc, fd, ep = st['params']
+    # Each call, we advance a little
+    if st['count'] < sc:
+        if st['on']:
+            set_all(strip, red, green, blue)
+        else:
             set_all(strip, 0, 0, 0)
-    time.sleep(speed_delay / 1000.0)
-
-@run_forever
-def twinkle_random(strip, count, speed_delay, only_one):
-    set_all(strip, 0, 0, 0)
-    used_indices = []
-
-    for _ in range(count):
-        if len(used_indices) >= strip.numPixels():
-            break  # All LEDs have been used
-
-        # Find a new random index not used before
-        while True:
-            index = random.randint(0, strip.numPixels() - 1)
-            if index not in used_indices:
-                break
-
-        used_indices.append(index)
-        set_pixel(strip, index, random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-
-        if only_one:
-            set_all(strip, 0, 0, 0)
-            used_indices = []  # Reset used indices if only one LED should be lit at a time
-
-    time.sleep(speed_delay / 1000.0)
-
-@run_forever
-def sparkle(strip, red, green, blue, speed_delay):
-    for _ in range(strip.numPixels()):
-        pixel = random.randint(0, strip.numPixels() - 1)
-        set_pixel(strip, pixel, red, green, blue)
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-        set_pixel(strip, pixel, 0, 0, 0)
-
-@run_forever
-def snow_sparkle(strip, red, green, blue, sparkle_delay, speed_delay):
-    set_all(strip, red, green, blue)
-    for _ in range(strip.numPixels()):
-        pixel = random.randint(0, strip.numPixels() - 1)
-        pixel2 = random.randint(0, strip.numPixels() - 1)
-
-        set_pixel(strip, pixel, 255, 255, 255)
-        set_pixel(strip, pixel2, 255, 255, 255)
-
-        strip.show()
-        time.sleep(sparkle_delay / 1000.0)
-        set_pixel(strip, pixel, red, green, blue)
-        set_pixel(strip, pixel2, red, green, blue)
-
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-
-@run_forever
-def running_lights(strip, red, green, blue, wave_delay):
-    position = 0
-    for _ in range(strip.numPixels() * 2):
-        position += 1
-        for i in range(strip.numPixels()):
-            set_pixel(strip, i, int(((math.sin(i + position) * 127 + 128) / 255) * red),
-                        int(((math.sin(i + position) * 127 + 128) / 255) * green),
-                        int(((math.sin(i + position) * 127 + 128) / 255) * blue))
-        strip.show()
-        time.sleep(wave_delay / 1000.0)
-
-@run_forever
-def color_wipe(strip, red, green, blue, speed_delay):
-    print('running color wipe')
-    for i in range(strip.numPixels()):
-        set_pixel(strip, i, red, green, blue)
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-
-@run_forever
-def rainbow_cycle(strip, speed_delay):
-    for j in range(256 * 5):  # 5 cycles of all colors on wheel
-        for i in range(strip.numPixels()):
-            color = wheel((int(i * 256 / strip.numPixels()) + j) & 255)
-            set_pixel(strip, i, color[0], color[1], color[2])
-        strip.show()
-        time.sleep(speed_delay / 1000.0)
-
-def wheel(pos):
-    if pos < 85:
-        return [pos * 3, 255 - pos * 3, 0]
-    elif pos < 170:
-        pos -= 85
-        return [255 - pos * 3, 0, pos * 3]
+        # Toggle on/off each call
+        st['on'] = not st['on']
+        st['count'] += 0.5  # each full cycle (on+off) counts as 1
     else:
-        pos -= 170
-        return [0, pos * 3, 255 - pos * 3]
+        # end pause - just keep off for a while
+        set_all(strip, 0, 0, 0)
+        # once done, reset?
+        st['params'] = None
 
-def theater_chase(strip, red, green, blue):
-    while True:
-        for j in range(10):  # do 10 cycles of chasing
-            for q in range(3):
-                for i in range(0, strip.numPixels(), 3):
-                    set_pixel(strip, i + q, red, green, blue)
-                strip.show()
-                time.sleep(0.1)
-                for i in range(0, strip.numPixels(), 3):
-                    set_pixel(strip, i + q, 0, 0, 0)
+# Halloween eyes step as state machine:
+# Steps:
+# 1. Choose random start, draw eyes
+# 2. Fade if needed
+# 3. Clear and pause
+def halloween_eyes_step(strip, red, green, blue, eye_width, eye_space, fade, steps, fade_delay, end_pause):
+    st = halloween_eyes_state
+    num_leds = strip.numPixels()
+    if st['params'] is None:
+        st['params'] = (red,green,blue,eye_width,eye_space,fade,steps,fade_delay,end_pause)
+        start_point = random.randint(0, num_leds - (2 * eye_width) - eye_space)
+        start_2nd_eye = start_point + eye_width + eye_space
+        st['start_point'] = start_point
+        st['start_2nd_eye'] = start_2nd_eye
+        # phase 0: draw eyes
+        for i in range(eye_width):
+            set_pixel(strip, start_point + i, red, green, blue)
+            set_pixel(strip, start_2nd_eye + i, red, green, blue)
+        st['phase'] = 0
+        st['fade_step'] = steps
 
-@run_forever
-def theater_chase_rainbow(strip):
-    for j in range(256):  # cycle all 256 colors in the wheel
-        for q in range(3):
-            for i in range(0, strip.numPixels(), 3):
-                color = wheel((i + j) % 255)
-                set_pixel(strip, i + q, color[0], color[1], color[2])
-            strip.show()
-            time.sleep(0.05)
-            for i in range(0, strip.numPixels(), 3):
-                set_pixel(strip, i + q, 0, 0, 0)
+    red,green,blue,eye_width,eye_space,fade,steps,fade_delay,end_pause = st['params']
 
-@run_forever
-def fire(strip, cooling, sparking, speed_delay):
-    heat = [0] * strip.numPixels()
-    for _ in range(strip.numPixels()):
-        cooldown = random.randint(0, ((cooling * 10) // strip.numPixels()) + 2)
-        heat[_] = max(heat[_] - cooldown, 0)
-    for k in range(strip.numPixels() - 1, 1, -1):
-        heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2]) // 3
-    if random.randint(0, 255) < sparking:
-        y = random.randint(0, 7)
-        heat[y] = heat[y] + random.randint(160, 255)
-    for j in range(strip.numPixels()):
+    if st['phase'] == 0:
+        # eyes drawn, next phase fade or skip to clear
+        if fade:
+            st['phase'] = 1
+        else:
+            st['phase'] = 2
+            st['fade_step'] = end_pause / 10
+
+    elif st['phase'] == 1:
+        # fade phase
+        if st['fade_step'] > 0:
+            j = st['fade_step']
+            r = int(j * (red / steps))
+            g = int(j * (green / steps))
+            b = int(j * (blue / steps))
+            for i in range(eye_width):
+                set_pixel(strip, st['start_point'] + i, r, g, b)
+                set_pixel(strip, st['start_2nd_eye'] + i, r, g, b)
+            st['fade_step'] -= 1
+        else:
+            # Fade done
+            st['phase'] = 2
+            st['fade_step'] = end_pause / 10
+
+    elif st['phase'] == 2:
+        # end pause
+        if st['fade_step'] > 0:
+            st['fade_step'] -= 1
+        else:
+            # clear and restart
+            set_all(strip,0,0,0)
+            st['params'] = None
+            st['phase'] = 0
+
+def cylon_bounce_step(strip, red, green, blue, eye_size, speed_delay, return_delay):
+    st = cylon_state
+    num_leds = strip.numPixels()
+    set_all(strip,0,0,0)
+    pos = st['pos']
+    forward = st['forward']
+    # Draw current position
+    # dim head and tail
+    set_pixel(strip, pos, red//10, green//10, blue//10)
+    for j in range(1, eye_size+1):
+        if pos+j < num_leds:
+            set_pixel(strip, pos+j, red, green, blue)
+    if pos+eye_size+1 < num_leds:
+        set_pixel(strip, pos+eye_size+1, red//10, green//10, blue//10)
+
+    # Move position
+    if forward:
+        if pos < num_leds - eye_size - 2:
+            st['pos'] += 1
+        else:
+            st['forward'] = False
+    else:
+        if pos > 0:
+            st['pos'] -= 1
+        else:
+            st['forward'] = True
+
+def twinkle_step(strip, red, green, blue, count, only_one):
+    # We'll just randomly light up a single pixel each step
+    # If only_one, clear all first
+    if only_one:
+        set_all(strip,0,0,0)
+    idx = random.randint(0, strip.numPixels()-1)
+    set_pixel(strip, idx, red, green, blue)
+
+def twinkle_random_step(strip, count, only_one):
+    st = twinkle_random_state
+    num_leds = strip.numPixels()
+    if only_one:
+        set_all(strip,0,0,0)
+        st['used_indices'] = []
+    # Just light up random pixels each step
+    idx = random.randint(0,num_leds-1)
+    set_pixel(strip, idx, random.randint(0,255), random.randint(0,255), random.randint(0,255))
+
+def sparkle_step(strip, red, green, blue):
+    # Turn on a random pixel for one step, then turn it off next step
+    st = sparkle_state
+    num_leds = strip.numPixels()
+    if st['on_pixel'] is None:
+        # Turn on a new pixel
+        st['on_pixel'] = random.randint(0,num_leds-1)
+        set_pixel(strip, st['on_pixel'], red, green, blue)
+        st['timer'] = 1
+    else:
+        # Turn it off
+        if st['timer'] > 0:
+            st['timer'] -= 1
+            if st['timer'] == 0:
+                set_pixel(strip, st['on_pixel'], 0,0,0)
+                st['on_pixel'] = None
+
+def snow_sparkle_step(strip, red, green, blue):
+    # Similar to sparkle but with two white pixels that turn back to base color
+    st = snow_sparkle_state
+    num_leds = strip.numPixels()
+    base_r, base_g, base_b = st['base_color']
+
+    if st['timer'] == 0:
+        # place two white pixels
+        st['pixels'] = random.sample(range(num_leds), 2)
+        for p in st['pixels']:
+            set_pixel(strip, p, 255,255,255)
+        st['timer'] = 5
+    else:
+        st['timer'] -= 1
+        if st['timer'] == 0:
+            # restore base color
+            for p in st['pixels']:
+                set_pixel(strip,p,red,green,blue)
+
+def running_lights_step(strip, red, green, blue):
+    st = running_lights_state
+    pos = st['position']
+    num_leds = strip.numPixels()
+
+    for i in range(num_leds):
+        level = (math.sin((i + pos) / 10.0) + 1) * 127.5
+        r = int((level / 255) * red)
+        g = int((level / 255) * green)
+        b = int((level / 255) * blue)
+        set_pixel(strip, i, r, g, b)
+
+    st['position'] += 1
+
+def color_wipe_step(strip, red, green, blue):
+    st = color_wipe_state
+    num_leds = strip.numPixels()
+    if not st['done']:
+        if st['index'] < num_leds:
+            set_pixel(strip, st['index'], red, green, blue)
+            st['index'] += 1
+        else:
+            st['done'] = True
+
+def rainbow_cycle_step(strip):
+    st = rainbow_cycle_state
+    step = st['step']
+    num_leds = strip.numPixels()
+
+    def wheel(pos):
+        if pos < 85:
+            return [pos * 3, 255 - pos * 3, 0]
+        elif pos < 170:
+            pos -= 85
+            return [255 - pos * 3, 0, pos * 3]
+        else:
+            pos -= 170
+            return [0, pos * 3, 255 - pos * 3]
+
+    for i in range(num_leds):
+        c = wheel((i * 256 // num_leds + step) & 255)
+        set_pixel(strip, i, c[0], c[1], c[2])
+    st['step'] += 1
+
+def theater_chase_step(strip, red, green, blue):
+    # Just chase three LEDs along the strip
+    st = theater_chase_state
+    num_leds = strip.numPixels()
+    i = st['index']
+    # Clear first
+    set_all(strip,0,0,0)
+    for j in range(i, num_leds, 3):
+        set_pixel(strip, j, red, green, blue)
+    st['index'] = (st['index']+1)%3
+
+def theater_chase_rainbow_step(strip):
+    st = theater_chase_rainbow_state
+    num_leds = strip.numPixels()
+    step = st['step']
+    i = st['index']
+
+    def wheel(pos):
+        if pos < 85:
+            return [pos * 3, 255 - pos * 3, 0]
+        elif pos < 170:
+            pos -= 85
+            return [255 - pos * 3, 0, pos * 3]
+        else:
+            pos -= 170
+            return [0, pos * 3, 255 - pos * 3]
+
+    set_all(strip,0,0,0)
+    for j in range(num_leds):
+        c = wheel((j+step)%256)
+        if (j % 3) == i:
+            set_pixel(strip, j, c[0], c[1], c[2])
+    st['index'] = (st['index']+1)%3
+    if st['index']==0:
+        st['step'] += 1
+
+def fire_step(strip, cooling, sparking):
+    st = fire_state
+    num_leds = strip.numPixels()
+    heat = st['heat'] if st['heat'] is not None else [0]*num_leds
+    # cool down
+    for i in range(num_leds):
+        cooldown = random.randint(0, ((cooling * 10) // num_leds) + 2)
+        heat[i] = max(0, heat[i] - cooldown)
+
+    # heat diffusion
+    for k in range(num_leds - 1, 1, -1):
+        heat[k] = (heat[k-1] + heat[k-2] + heat[k-2])//3
+
+    # ignite sparks near bottom
+    if random.randint(0,255)<sparking:
+        y = random.randint(0,7)
+        heat[y] = min(heat[y] + random.randint(160,255),255)
+
+    # map heat to colors
+    for j in range(num_leds):
         set_pixel_heat_color(strip, j, heat[j])
-    strip.show()
-    time.sleep(speed_delay / 1000.0)
+
+    st['heat'] = heat
 
 def set_pixel_heat_color(strip, pixel, temperature):
-    t192 = round((temperature / 255.0) * 191)
-    heatramp = t192 & 0x3F
-    heatramp <<= 2
+    t192 = round((temperature/255.0)*191)
+    heatramp = (t192 & 0x3F)<<2
     if t192 > 0x80:
-        set_pixel(strip, pixel, 255, 255, heatramp)
-    elif t192 > 0x40:
-        set_pixel(strip, pixel, 255, heatramp, 0)
+        set_pixel(strip, pixel, 255,255,heatramp)
+    elif t192 >0x40:
+        set_pixel(strip, pixel, 255,heatramp,0)
     else:
-        set_pixel(strip, pixel, heatramp, 0, 0)
+        set_pixel(strip, pixel, heatramp,0,0)
 
-@run_forever
-def bouncing_colored_balls(strip, ball_count, colors, continuous):
-    gravity = -9.81
-    start_height = 1
-    height = [start_height] * ball_count
-    impact_velocity_start = math.sqrt(2 * abs(gravity) * start_height)
-    impact_velocity = [impact_velocity_start] * ball_count
-    time_since_last_bounce = [0] * ball_count
-    position = [0] * ball_count
-    clock_time_since_last_bounce = [time.time()] * ball_count
-    dampening = [0.90 - float(i) / ball_count ** 2 for i in range(ball_count)]
-    ball_bouncing = [True] * ball_count
+# Implement meteor_rain_step and bouncing_colored_balls_step as incremental steps
+# Similar logic applies: track position in state, advance by one step each call,
+# no internal loops or sleeps.
 
-    while True:
-        balls_still_bouncing = False
-        for i in range(ball_count):
-            time_since_last_bounce[i] = time.time() - clock_time_since_last_bounce[i]
-            height[i] = 0.5 * gravity * (time_since_last_bounce[i] ** 2) + impact_velocity[i] * time_since_last_bounce[i]
-            if height[i] < 0:
-                height[i] = 0
-                impact_velocity[i] *= dampening[i]
-                clock_time_since_last_bounce[i] = time.time()
-                if impact_velocity[i] < 0.01:
-                    if continuous:
-                        impact_velocity[i] = impact_velocity_start
-                    else:
-                        ball_bouncing[i] = False
-            position[i] = round(height[i] * (strip.numPixels() - 1) / start_height)
+meteor_rain_state = {'pos':0, 'initialized':False, 'trail_length':10, 'red':255,'green':255,'blue':255,'meteor_size':5,'random_decay':True,'speed_delay':30,'direction':1}
+def meteor_rain_step(strip, red, green, blue, meteor_size, meteor_trail_decay, meteor_random_decay, speed_delay):
+    st = meteor_rain_state
+    num_leds = strip.numPixels()
 
-        set_all(strip, 0, 0, 0)  # Clear the strip before drawing new positions
-        for i in range(ball_count):
-            if ball_bouncing[i]:
-                balls_still_bouncing = True
-            set_pixel(strip, position[i], colors[i % len(colors)][0], colors[i % len(colors)][1], colors[i % len(colors)][2])
-        strip.show()
-        time.sleep(0.02)  # Small delay for smoother animation
+    # Initialize if needed
+    if not st['initialized']:
+        st['red'], st['green'], st['blue'] = red, green, blue
+        st['meteor_size'] = meteor_size
+        st['trail_length'] = meteor_trail_decay
+        st['random_decay'] = meteor_random_decay
+        st['pos'] = 0
+        st['direction'] = 1
+        st['initialized'] = True
 
-@run_forever
-def meteor_rain(strip, red, green, blue, meteor_size, meteor_trail_decay, meteor_random_decay, speed_delay):
-    set_all(strip, 0, 0, 0)
-    for i in range(strip.numPixels() * 2):
-        for j in range(strip.numPixels()):
-            if not meteor_random_decay or random.randint(0, 10) > 5:
-                fade_to_black(strip, j, meteor_trail_decay)
-        for j in range(meteor_size):
-            if (i - j < strip.numPixels()) and (i - j >= 0):
-                set_pixel(strip, i - j, red, green, blue)
-        strip.show()
-        time.sleep(0.001)
+    # Fade all LEDs one step
+    for j in range(num_leds):
+        if not st['random_decay'] or random.randint(0,10)>5:
+            fade_to_black(strip,j, st['trail_length'])
+
+    # Draw meteor
+    for i in range(st['meteor_size']):
+        if (st['pos']-i)>=0 and (st['pos']-i)<num_leds:
+            set_pixel(strip, st['pos']-i, red, green, blue)
+
+    st['pos'] += st['direction']
+    if st['pos'] >= num_leds:
+        st['pos'] = 0
+
+bouncing_balls_state = {'init':False,'positions':[],'velocities':[],'clock':[],'colors':[],'gravity':-9.81,'startTime':0}
+def bouncing_colored_balls_step(strip, ballCount, colors, continuous):
+    # This is a complex animation. For simplicity, we do a small increment each call.
+    st = bouncing_balls_state
+    num_leds = strip.numPixels()
+    if not st['init']:
+        st['colors'] = colors
+        st['positions'] = [0]*ballCount
+        st['velocities'] = [0]*ballCount
+        st['clock'] = [time.time()]*ballCount
+        st['init'] = True
+        set_all(strip,0,0,0)
+
+    # One small increment per call
+    set_all(strip,0,0,0)
+    for i in range(ballCount):
+        t = time.time()
+        dt = t - st['clock'][i]
+        st['clock'][i] = t
+        # position and velocity update
+        st['velocities'][i] += st['gravity'] * dt
+        st['positions'][i] += st['velocities'][i]
+
+        if st['positions'][i] < 0:
+            st['positions'][i] = 0
+            st['velocities'][i] = -st['velocities'][i]*0.90 # bounce
+
+        idx = int(st['positions'][i])
+        if idx < num_leds:
+            c = st['colors'][i % len(st['colors'])]
+            set_pixel(strip, idx, c[0], c[1], c[2])
