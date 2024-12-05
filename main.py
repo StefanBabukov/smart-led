@@ -9,15 +9,16 @@ from pacifica import pacifica_step
 from animations import *
 from static_mode import StaticMode
 from fire import fire_step
-from color_bounce import color_bounce_step  # Ensure this follows the same pattern (no loops/sleeps)
+from color_bounce import color_bounce_step
 from led_operations import set_all
+from halloween_scene import halloween_scene_step, reset_halloween_scene_state  # Import Halloween animation
 
 # LED strip configuration
 LED_COUNT = 300       # Number of LED pixels.
 LED_PIN = 18          # GPIO pin connected to the pixels (must support PWM!).
 LED_FREQ_HZ = 800000  # LED signal frequency in hertz (usually 800khz)
 LED_DMA = 10          # DMA channel to use for generating signal (try 10)
-LED_BRIGHTNESS = 255  # Set to 0 for darkest and 255 for brightest
+LED_BRIGHTNESS = 10   # Initial brightness
 LED_INVERT = False    # True to invert the signal (when using NPN transistor level shift)
 LED_CHANNEL = 0       # Set to 1 for GPIOs 13,19,41,45,53
 
@@ -31,6 +32,9 @@ current_effect_thread = None
 # Initialize the LED strip
 strip = PixelStrip(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS, LED_CHANNEL)
 strip.begin()
+
+# Track brightness globally
+current_brightness = LED_BRIGHTNESS
 
 # Initialize static mode handler
 static_mode = StaticMode(strip)
@@ -61,24 +65,39 @@ def handle_ir():
                 current_command = event.value
                 print("Received command", event.value)
                 last_command_time = current_time
-        # Add a small delay to prevent tight looping that can cause CPU spikes
-        time.sleep(0.01)
+        time.sleep(0.01)  # small delay to prevent CPU spike
 
 def run_animation(effect_function, *args, **kwargs):
     """
     Run a given effect function in a loop until effect_stop_event is set.
     Use a stable frame rate delay for smoother animations.
     """
-    # Target frame time (e.g. 20ms for ~50 FPS)
-    frame_time = 0.02  
+    frame_time = 0.02  # ~50 FPS
     while not effect_stop_event.is_set():
         start = time.time()
         effect_function(strip, *args, **kwargs)
         strip.show()
         elapsed = time.time() - start
-        # Sleep to maintain stable frame rate if there's time left in the frame
         if elapsed < frame_time:
             time.sleep(frame_time - elapsed)
+
+def reset_states():
+    # Reset all states to their initial values
+    fade_in_out_state.update({'direction': 1, 'brightness': 0})
+    running_lights_state.update({'position': 0})
+    twinkle_state.update({'pixels': []})
+    twinkle_random_state.update({'used_indices': []})
+    sparkle_state.update({'on_pixel': None, 'timer': 0})
+    snow_sparkle_state.update({'pixels': [], 'timer': 0, 'base_color': (16,16,16)})
+    cylon_state.update({'pos': 0, 'forward': True})
+    color_wipe_state.update({'index':0, 'done':False})
+    rainbow_cycle_state.update({'step': 0})
+    theater_chase_state.update({'step': 0, 'index':0})
+    theater_chase_rainbow_state.update({'step':0,'index':0})
+    fire_state.update({'heat': None})
+    bouncing_balls_state.update({'init':False,'positions':[],'velocities':[],'clock':[],'colors':[],'gravity':-9.81,'startTime':0})
+    meteor_rain_state.update({'pos':0,'direction':1,'initialized':False,'trail_length':10,'red':255,'green':255,'blue':255,'meteor_size':5,'random_decay':True,'speed_delay':30})
+    wheel_step_state.update({'pos':0})
 
 def start_effect(effect_function, *args, **kwargs):
     global current_effect_thread
@@ -86,6 +105,16 @@ def start_effect(effect_function, *args, **kwargs):
     effect_stop_event.set()
     if current_effect_thread and current_effect_thread.is_alive():
         current_effect_thread.join()
+
+    # Clear strip and reset states before starting new animation
+    set_all(strip, 0, 0, 0)
+    strip.show()
+    reset_states()
+
+    # Special case for Halloween animation
+    if effect_function == halloween_scene_step:
+        reset_halloween_scene_state()
+
     effect_stop_event.clear()
 
     # Start new effect thread
@@ -96,9 +125,7 @@ def start_effect(effect_function, *args, **kwargs):
 def no_op(strip, *args, **kwargs):
     pass
 
-# Define wheel_step for the previously missing effect
 def wheel_step(strip, c1=(255,0,0), c2=(0,255,0), step=500):
-    # Simple wheel effect: just rotate through colors
     st = wheel_step_state
     num_leds = strip.numPixels()
     pos = st['pos']
@@ -114,7 +141,7 @@ effects = {
     0: lambda: start_effect(fade_in_out_step, 255, 0, 0),
     1: lambda: start_effect(pacifica_step),
     2: lambda: start_effect(wheel_step, (255, 0, 0), (0, 255, 0), 500),
-    3: lambda: start_effect(halloween_eyes_step, 255, 0, 0, 1, 4, True, 5, 50, 1000),
+    3: lambda: start_effect(halloween_scene_step),  # Halloween effect
     4: lambda: start_effect(cylon_bounce_step, 255, 0, 0, 4, 10, 50),
     5: lambda: start_effect(cylon_bounce_step, 255, 0, 0, 8, 10, 50),
     6: lambda: start_effect(twinkle_step, 255, 0, 0, 10, False),
@@ -151,18 +178,31 @@ def stop_animations():
     effect_stop_event.set()
     if current_effect_thread and current_effect_thread.is_alive():
         current_effect_thread.join()
-    set_all(strip, 0, 0, 0)  # Turn off LEDs
+    set_all(strip, 0, 0, 0)
+    strip.show()
+
+def change_brightness(up=True):
+    global current_brightness
+    step = 5
+    if up:
+        current_brightness = min(255, current_brightness + step)
+    else:
+        current_brightness = max(0, current_brightness - step)
+    strip.setBrightness(current_brightness)
+    strip.show()
 
 mode_commands = {
     'animation': {
         'next': next_effect,
-        'previous': previous_effect
+        'previous': previous_effect,
+        'up': lambda: change_brightness(up=True),
+        'down': lambda: change_brightness(up=False)
     },
     'static': {
         'next': static_mode.increase_hue,
         'previous': static_mode.decrease_hue,
-        'up': static_mode.increase_brightness,
-        'down': static_mode.decrease_brightness
+        'up': lambda: change_brightness(up=True),
+        'down': lambda: change_brightness(up=False)
     }
 }
 
@@ -178,20 +218,15 @@ def ir_listener():
             print(f"Current command: {current_command}")
             if current_command == 69:  # Animation mode
                 set_all(strip, 0, 0, 0)
+                strip.show()
                 current_mode = 'animation'
             elif current_command == 70:  # Static mode
                 stop_animations()
                 current_mode = 'static'
             elif current_command == 90:  # NEXT
-                if current_mode == 'animation':
-                    mode_commands['animation']['next']()
-                else:
-                    mode_commands['static']['next']()
+                mode_commands[current_mode]['next']()
             elif current_command == 8:   # PREVIOUS
-                if current_mode == 'animation':
-                    mode_commands['animation']['previous']()
-                else:
-                    mode_commands['static']['previous']()
+                mode_commands[current_mode]['previous']()
             elif current_command == 28:  # TOGGLE ON/OFF
                 animations_enabled = not animations_enabled
                 if not animations_enabled:
@@ -199,15 +234,13 @@ def ir_listener():
                 else:
                     if current_mode == 'animation':
                         run_effect(selected_effect)
-            elif current_command == 24:  # UP in static mode
-                if current_mode == 'static' and 'up' in mode_commands['static']:
-                    mode_commands['static']['up']()
-            elif current_command == 82:  # DOWN in static mode
-                if current_mode == 'static' and 'down' in mode_commands['static']:
-                    mode_commands['static']['down']()
+            elif current_command == 24:  # UP
+                mode_commands[current_mode]['up']()
+            elif current_command == 82:  # DOWN
+                mode_commands[current_mode]['down']()
 
             current_command = 0
-            time.sleep(0.1)  # Slight pause to avoid command flooding
+            time.sleep(0.1)
 
 if __name__ == "__main__":
     print("Setup complete. Waiting for IR input...")

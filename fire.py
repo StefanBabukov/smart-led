@@ -22,6 +22,7 @@ PALETTE = [
 
 def fire_step(strip, cooling=COOLING, sparking=SPARKING, speed_delay=5):
     num_leds = strip.numPixels()
+
     if fire_state['heat'] is None:
         fire_state['heat'] = [0] * num_leds
 
