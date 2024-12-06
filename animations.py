@@ -16,7 +16,6 @@ color_wipe_state = {'index':0, 'done':False}
 rainbow_cycle_state = {'step': 0}
 theater_chase_state = {'step': 0, 'index':0}
 theater_chase_rainbow_state = {'step':0,'index':0}
-fire_state = {'heat': None}
 bouncing_balls_state = {'init':False,'positions':[],'velocities':[],'clock':[],'colors':[],'gravity':-9.81,'startTime':0}
 meteor_rain_state = {'pos':0,'direction':1,'initialized':False,'trail_length':10,'red':255,'green':255,'blue':255,'meteor_size':5,'random_decay':True,'speed_delay':30}
 wheel_step_state = {'pos':0}
@@ -204,24 +203,6 @@ def theater_chase_rainbow_step(strip):
     st['index'] = (st['index']+1)%3
     if st['index']==0:
         st['step'] += 1
-
-def fire_step(strip, cooling, sparking):
-    st = fire_state
-    num_leds = strip.numPixels()
-    heat = st['heat'] if st['heat'] is not None else [0]*num_leds
-    for i in range(num_leds):
-        cooldown = random.randint(0, ((cooling * 10) // num_leds) + 2)
-        heat[i] = max(0, heat[i] - cooldown)
-    for k in range(num_leds - 1, 1, -1):
-        heat[k] = (heat[k-1] + heat[k-2] + heat[k-2])//3
-    if random.randint(0,255)<sparking:
-        y = random.randint(0,7)
-        heat[y] = min(heat[y] + random.randint(160,255),255)
-
-    for j in range(num_leds):
-        set_pixel_heat_color(strip, j, heat[j])
-
-    st['heat'] = heat
 
 def set_pixel_heat_color(strip, pixel, temperature):
     t192 = round((temperature/255.0)*191)

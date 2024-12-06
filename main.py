@@ -5,21 +5,23 @@ from threading import Thread, Event
 from gpiozero import Button
 from rpi_ws281x import PixelStrip, Color
 import evdev
+
 from pacifica import pacifica_step
 from animations import *
 from static_mode import StaticMode
 from fire import fire_step
 from color_bounce import color_bounce_step
 from led_operations import set_all
-from halloween_scene import halloween_scene_step, reset_halloween_scene_state  # Import Halloween animation
+from halloween_scene import halloween_scene_step, reset_halloween_scene_state
+from xmas_scene import xmas_scene_step, reset_xmas_scene_state  # Import Christmas animation
 
 # LED strip configuration
 LED_COUNT = 300       # Number of LED pixels.
 LED_PIN = 18          # GPIO pin connected to the pixels (must support PWM!).
 LED_FREQ_HZ = 800000  # LED signal frequency in hertz (usually 800khz)
 LED_DMA = 10          # DMA channel to use for generating signal (try 10)
-LED_BRIGHTNESS = 10   # Initial brightness
-LED_INVERT = False    # True to invert the signal (when using NPN transistor level shift)
+LED_BRIGHTNESS = 100  # Initial brightness
+LED_INVERT = False     # True to invert the signal (when using NPN transistor level shift)
 LED_CHANNEL = 0       # Set to 1 for GPIOs 13,19,41,45,53
 
 effect_stop_event = Event()
@@ -94,7 +96,6 @@ def reset_states():
     rainbow_cycle_state.update({'step': 0})
     theater_chase_state.update({'step': 0, 'index':0})
     theater_chase_rainbow_state.update({'step':0,'index':0})
-    fire_state.update({'heat': None})
     bouncing_balls_state.update({'init':False,'positions':[],'velocities':[],'clock':[],'colors':[],'gravity':-9.81,'startTime':0})
     meteor_rain_state.update({'pos':0,'direction':1,'initialized':False,'trail_length':10,'red':255,'green':255,'blue':255,'meteor_size':5,'random_decay':True,'speed_delay':30})
     wheel_step_state.update({'pos':0})
@@ -114,6 +115,10 @@ def start_effect(effect_function, *args, **kwargs):
     # Special case for Halloween animation
     if effect_function == halloween_scene_step:
         reset_halloween_scene_state()
+
+    # Special case for Xmas animation
+    if effect_function == xmas_scene_step:
+        reset_xmas_scene_state()
 
     effect_stop_event.clear()
 
@@ -153,11 +158,11 @@ effects = {
     12: lambda: start_effect(rainbow_cycle_step),
     13: lambda: start_effect(theater_chase_step, 255, 0, 0),
     14: lambda: start_effect(theater_chase_rainbow_step),
-    15: lambda: start_effect(fire_step, 55, 120),
+    15: lambda: start_effect(fire_step,80, 220),
     16: lambda: start_effect(bouncing_colored_balls_step, 1, [(255, 0, 0)], False),
     17: lambda: start_effect(bouncing_colored_balls_step, 20, [(255, 0, 0), (255, 255, 255), (0, 0, 255)], False),
     18: lambda: start_effect(meteor_rain_step, 255, 255, 255, 10, 64, True, 30),
-    19: lambda: start_effect(fire_step, 55, 120)  # Another fire variant
+    19: lambda: start_effect(xmas_scene_step),  # Christmas effect
 }
 
 def run_effect(selected_effect):
@@ -183,12 +188,13 @@ def stop_animations():
 
 def change_brightness(up=True):
     global current_brightness
-    step = 5
+    step = 20
     if up:
         current_brightness = min(255, current_brightness + step)
     else:
         current_brightness = max(0, current_brightness - step)
     strip.setBrightness(current_brightness)
+    print('changed brightness to ', current_brightness)
     strip.show()
 
 mode_commands = {

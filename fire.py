@@ -1,7 +1,7 @@
 import random
 from led_operations import set_pixel
-COOLING = 20
-SPARKING = 120
+COOLING = 40
+SPARKING = 200
 
 # Keep state in a dictionary so it's not reset every call
 fire_state = {

@@ -1,7 +1,7 @@
 import time
 import random
 import math
-from led_operations import set_pixel, set_all, fade_to_black
+from led_operations import set_pixel, set_all
 
 # Global state for the Halloween scene
 halloween_scene_state = {
@@ -27,6 +27,7 @@ halloween_scene_state = {
     'side_flicker_timer': 0,
     'eat_flash_timer': 0,
     'eat_inner_flash_timer': 0,
+    'eyes_blink_timer': 0,   # tracks blinking duration
 }
 
 def reset_halloween_scene_state():
@@ -52,6 +53,7 @@ def reset_halloween_scene_state():
         'side_flicker_timer': 0,
         'eat_flash_timer': 0,
         'eat_inner_flash_timer': 0,
+        'eyes_blink_timer': 0,
     })
 
 def halloween_scene_step(strip):
@@ -75,54 +77,56 @@ def halloween_scene_step(strip):
     # Max pumpkin speed
     max_pumpkin_speed = 0.7
 
-    # Spawn treats occasionally
-    if (st['frame_count'] - st['last_treat_spawn'] > 50) and (random.random() > 0.95):
-        pumpkin_pos = st['pumpkin_position']
-        group_size = random.randint(1,3)
-        for _ in range(group_size):
-            attempts = 0
-            while True:
-                pos = random.randint(0, num_leds-1)
-                if abs(pos - pumpkin_pos) > 20:
-                    break
-                attempts += 1
-                if attempts > 50:
-                    break
-            direction = random.choice([-1,1])
-            is_special = (random.random() > 0.9)
-            if is_special:
-                length = 3
-                base_speed = 0.4
-            else:
-                length = random.randint(1,3)
-                base_speed = 0.5 - (length-1)*0.15
+    # Spawn treats occasionally (only if less than 5 total)
+    if len(st['treats']) < 5:
+        if (st['frame_count'] - st['last_treat_spawn'] > 50) and (random.random() > 0.95):
+            pumpkin_pos = st['pumpkin_position']
+            group_size = random.randint(1,3)
+            # Ensure we don't exceed 5 treats total
+            remaining_slots = 5 - len(st['treats'])
+            group_size = min(group_size, remaining_slots)
 
-            r = random.randint(100,255)
-            g = random.randint(100,255)
-            b = random.randint(100,255)
+            for _ in range(group_size):
+                attempts = 0
+                while True:
+                    pos = random.randint(0, num_leds-1)
+                    if abs(pos - pumpkin_pos) > 20:
+                        break
+                    attempts += 1
+                    if attempts > 50:
+                        break
+                direction = random.choice([-1,1])
+                is_special = (random.random() > 0.9)
+                if is_special:
+                    length = 3
+                    base_speed = 0.4
+                else:
+                    length = random.randint(1,3)
+                    base_speed = 0.5 - (length-1)*0.15
 
-            st['treats'].append({
-                'pos': float(pos),
-                'dir': direction,
-                'r': r,
-                'g': g,
-                'b': b,
-                'panic_timer': 0,
-                'length': length,
-                'base_speed': base_speed,
-                'special': is_special
-            })
-        st['last_treat_spawn'] = st['frame_count']
+                r = random.randint(100,255)
+                g = random.randint(100,255)
+                b = random.randint(100,255)
+
+                st['treats'].append({
+                    'pos': float(pos),
+                    'dir': direction,
+                    'r': r,
+                    'g': g,
+                    'b': b,
+                    'panic_timer': 0,
+                    'length': length,
+                    'base_speed': base_speed,
+                    'special': is_special
+                })
+            st['last_treat_spawn'] = st['frame_count']
 
     # Smooth color transitions for pumpkin:
-    # Slowly rotate hue
     st['pumpkin_color_phase'] = (st['pumpkin_color_phase'] + 1) % 360
-    # Side color is offset by +30 degrees
     st['pumpkin_side_color_phase'] = (st['pumpkin_color_phase'] + 30) % 360
 
     # Use a sine wave to modulate brightness slightly
     sine_factor = (math.sin(st['frame_count'] * 0.05) + 1) / 2
-    # Sine factor in [0..1], adjust value (v)
     v = 0.8 + 0.2 * sine_factor  # brightness between 0.8 and 1.0
     pumpkin_r, pumpkin_g, pumpkin_b = hsv_to_rgb((st['pumpkin_color_phase'] / 360.0), 1.0, v)
 
@@ -131,7 +135,7 @@ def halloween_scene_step(strip):
         base_r, base_g, base_b = background_color(i + st['background_offset'])
         set_pixel(strip, i, base_r, base_g, base_b)
 
-    # Treat interactions
+    # Treat interactions (bounce off each other)
     for i in range(len(st['treats'])):
         for j in range(i+1, len(st['treats'])):
             if abs(st['treats'][i]['pos'] - st['treats'][j]['pos']) < 2:
@@ -139,21 +143,29 @@ def halloween_scene_step(strip):
                 st['treats'][j]['dir'] *= -1
 
     pumpkin_pos = st['pumpkin_position']
+
+    # Chasing logic: chase from further away
     if st['treats']:
-        # Chase closest treat
         closest_treat = min(st['treats'], key=lambda t: abs(t['pos'] - pumpkin_pos))
         dist = closest_treat['pos'] - pumpkin_pos
         st['pumpkin_direction'] = 1 if dist > 0 else -1
         distance_abs = abs(dist)
         base_speed = 0.3
-        if distance_abs < 20:
+        
+        # Increase chase aggressiveness from further distances
+        if distance_abs < 80:
             base_speed += 0.2
-        if distance_abs < 10:
-            base_speed += 0.2
-        if distance_abs < 5:
+        if distance_abs < 50:
             base_speed += 0.3
+        if distance_abs < 20:
+            base_speed += 0.3
+        if distance_abs < 10:
+            base_speed += 0.3
+
+        # Occasional random direction flip
         if random.random() > 0.99:
             st['pumpkin_direction'] *= -1
+
         st['pumpkin_speed'] = min(base_speed, max_pumpkin_speed)
     else:
         # No treats: wander
@@ -175,7 +187,7 @@ def halloween_scene_step(strip):
     elif st['pumpkin_position'] > num_leds-1:
         st['pumpkin_position'] = num_leds - 1
 
-    # Side colors (no flicker)
+    # Side colors
     side_r, side_g, side_b = hsv_to_rgb((st['pumpkin_side_color_phase']/360.0), 1.0, v)
 
     # Move & draw treats
@@ -201,10 +213,9 @@ def halloween_scene_step(strip):
         t['pos'] += t['dir'] * treat_speed
 
         if t['special']:
-            # special treat: random bright colors each frame
             t['r'], t['g'], t['b'] = hsv_random_bright_color()
         else:
-            # Slight flicker adjustments
+            # slight flicker
             if random.random() > 0.95:
                 t['r'] = min(255, max(100, t['r'] + random.randint(-20,20)))
                 t['g'] = min(255, max(100, t['g'] + random.randint(-20,20)))
@@ -246,8 +257,17 @@ def halloween_scene_step(strip):
 
             set_pixel(strip, i, int(pr), int(pg), int(pb))
 
-    # Draw eyes according to pumpkin size
-    draw_eyes(strip, pumpkin_center, st['pumpkin_width'])
+    # Eye blinking logic
+    if st['eyes_blink_timer'] == 0:
+        # Random chance to blink
+        if random.randint(0,1000) == 0:
+            st['eyes_blink_timer'] = 5
+
+    # Draw eyes (red/orange), blinking if needed
+    draw_eyes(strip, pumpkin_center, st['pumpkin_width'], st['eyes_blink_timer'])
+
+    if st['eyes_blink_timer'] > 0:
+        st['eyes_blink_timer'] -= 1
 
     # Teeth logic
     st['teeth_width'] = max(5, st['pumpkin_width'] // 4)
@@ -269,7 +289,7 @@ def halloween_scene_step(strip):
             if 0 <= tpos < num_leds:
                 set_pixel(strip, tpos, 200,200,150)
 
-    # Check eating
+    # Check if treats are eaten
     eaten_count = 0
     special_eaten = 0
     remaining_treats = []
@@ -302,39 +322,60 @@ def halloween_scene_step(strip):
     if st['eat_inner_flash_timer'] > 0:
         st['eat_inner_flash_timer'] -= 1
 
-
-def draw_eyes(strip, center, width):
-    # As the pumpkin grows bigger, eyes get more complex:
-    # Small (<30): single red pixel at center
-    # Medium (30<=width<50): two pixels, red and orange gradient
-    # Large (>=50): four pixels, red center, orange outwards, darker edges
+def draw_eyes(strip, center, width, blink_timer):
     num_leds = strip.numPixels()
 
-    if width < 30:
-        # Single red pixel
-        if 0 <= center < num_leds:
-            set_pixel(strip, center, 255,0,0)
-    elif width < 50:
-        # Two pixels: center (red), center+1 (orange)
-        if 0 <= center < num_leds:
-            set_pixel(strip, center, 255,0,0)
-        if 0 <= center+1 < num_leds:
-            set_pixel(strip, center+1, 255,100,0)
-    else:
-        # Four pixels: 
-        # center-1: dark red
-        # center: bright red
-        # center+1: red-orange
-        # center+2: orange-black mix (dim orange)
-        eye_pixels = [
-            (center-1, (200,0,0)),
-            (center,   (255,0,0)),
-            (center+1, (255,80,0)),
-            (center+2, (180,80,0))
-        ]
-        for pos, color in eye_pixels:
+    # If blinking, eyes closed (draw black)
+    if blink_timer > 0:
+        # Overwrite a small region around the center with black
+        # based on the largest eye size (4 pixels)
+        for pos in range(center-2, center+3):
             if 0 <= pos < num_leds:
-                set_pixel(strip, pos, color[0], color[1], color[2])
+                set_pixel(strip, pos, 0,0,0)
+        return
+
+    # Colors for eyes: we will use orange and red
+    # Orange: (255,150,0)
+    # Red: (255,0,0)
+    orange = (255,150,0)
+    dim_orange = (180,100,0)
+
+    # Eye patterns depending on size:
+    # Small (<30): 2 pixels
+    #   (center-1): orange
+    #   (center): red
+    # Medium (30<=width<50): 3 pixels
+    #   (center-1): orange
+    #   (center): red
+    #   (center+1): orange
+    # Large (>=50): 4 pixels
+    #   (center-2): dim orange
+    #   (center-1): orange
+    #   (center): red
+    #   (center+1): orange
+
+    if width < 30:
+        eye_pixels = [
+            (center-1, orange),
+            (center,   (255,0,0)) # red
+        ]
+    elif width < 50:
+        eye_pixels = [
+            (center-1, orange),
+            (center,   (255,0,0)), # red
+            (center+1, orange)
+        ]
+    else:
+        eye_pixels = [
+            (center-2, dim_orange),
+            (center-1, orange),
+            (center,   (255,0,0)), # red pupil
+            (center+1, orange)
+        ]
+
+    for pos, color in eye_pixels:
+        if 0 <= pos < num_leds:
+            set_pixel(strip, pos, color[0], color[1], color[2])
 
 def hsv_random_bright_color():
     h = random.random()
