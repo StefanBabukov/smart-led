@@ -2,9 +2,26 @@
 
 SETUP:
 
-run the setup.sh script on the raspberry PI.
+1. run the setup.sh script on the raspberry PI.
 
-Follow this tutorial to setup the IR sensor on the raspberry https://ignorantofthings.com/receiving-infrared-on-the-raspberry-pi-with-python/
+<!-- Follow this tutorial to setup the IR sensor on the raspberry https://ignorantofthings.com/receiving-infrared-on-the-raspberry-pi-with-python/ -->
+2.  sudo nano /boot/firmware/config.txt 
+    add the 'dtoverlay=gpio-ir,gpio_pin=27' line under [all]
+    sudo reboot
+    sudo apt-get install ir-keytable
+    sudo apt install python3-evdev
+    sudo apt-get install evtest
+
+    sudo nano /etc/rc.local
+    Add these lines:
+        #!/bin/sh -e
+
+        sudo ir-keytable -p all
+
+        exit 0
+3. Test IR receiver:
+    sudo ir-keytable -p all
+    sudo evtest
 
 
 
