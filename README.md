@@ -10,34 +10,31 @@ SETUP:
     sudo reboot
     sudo apt-get install ir-keytable
     sudo apt install python3-evdev
+    sudo pip3 install rpi_ws281x --break-system-packages
     sudo apt-get install evtest
 
-    sudo nano /etc/rc.local
-    Add these lines:
-        #!/bin/sh -e
-
-        sudo ir-keytable -p all
-
-        exit 0
 3. Test IR receiver:
     sudo ir-keytable -p all
     sudo evtest
 
+4. Setup to execute the python script on boot:
+    sudo nano /etc/systemd/system/smart-led.service
+    add this to the file:
+[Unit]
+Description=Smart LED Python Script
+After=network.target
 
+[Service]
+ExecStart=/bin/sh -c "ir-keytable -p all && /usr/bin/python3 /home/pi/smart-led/main.py"
+WorkingDirectory=/home/pi/smart-led
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=root
+Environment=PYTHONUNBUFFERED=1
 
-Setup to execute the python script on boot:
-    [Unit]
-    Description=Smart LED Python Script
-    After=network.target
+[Install]
+WantedBy=multi-user.target
 
-    [Service]
-    ExecStart=/usr/bin/sudo /usr/bin/python3 /home/pi/smart-led/main.py
-    WorkingDirectory=/home/pi/smart-led
-    StandardOutput=inherit
-    StandardError=inherit
-    Restart=always
-    User=root
-    Environment=PYTHONUNBUFFERED=1
-
-    [Install]
-    WantedBy=multi-user.target
+5. Start the service
+    systemctl enable smart-led.service
