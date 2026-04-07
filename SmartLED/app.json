@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Smart LED",
+    "slug": "smart-led",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": null,
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.smartled.remote",
+      "permissions": ["android.permission.INTERNET"]
+    },
+    "plugins": []
+  }
+}
