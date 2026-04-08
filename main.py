@@ -240,6 +240,8 @@ def ir_listener():
                 else:
                     if current_mode == 'animation':
                         run_effect(selected_effect)
+                    elif current_mode == 'static':
+                        static_mode.show_color()
             elif current_command == 24:  # UP
                 mode_commands[current_mode]['up']()
             elif current_command == 82:  # DOWN

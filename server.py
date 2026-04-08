@@ -217,8 +217,9 @@ def get_state_dict():
     if current_mode == 'animation':
         name = effect_names[selected_effect] if 0 <= selected_effect < len(effect_names) else "Unknown"
     else:
-        name = f"Static (Hue {static_mode.hue})"
-    return {
+        r, g, b = static_mode.get_rgb()
+        name = f"Static (R{r} G{g} B{b})"
+    state = {
         "type": "state",
         "mode": current_mode,
         "effect_index": selected_effect,
@@ -227,6 +228,9 @@ def get_state_dict():
         "enabled": animations_enabled,
         "total_effects": len(effects),
     }
+    if current_mode == 'static':
+        state["color"] = {"r": r, "g": g, "b": b}
+    return state
 
 
 async def broadcast_state():
@@ -238,8 +242,8 @@ async def broadcast_state():
         )
 
 
-async def handle_command(action):
-    global current_mode, animations_enabled, selected_effect
+async def handle_command(action, data):
+    global current_mode, animations_enabled, selected_effect, current_brightness
 
     if action == "mode_animation":
         set_all(strip, 0, 0, 0)
@@ -257,6 +261,22 @@ async def handle_command(action):
         else:
             if current_mode == 'animation':
                 run_effect(selected_effect)
+            elif current_mode == 'static':
+                static_mode.show_color()
+    elif action == "set_color":
+        r = max(0, min(255, int(data.get("r", 255))))
+        g = max(0, min(255, int(data.get("g", 255))))
+        b = max(0, min(255, int(data.get("b", 255))))
+        if current_mode == 'animation':
+            stop_animations()
+        current_mode = 'static'
+        animations_enabled = True
+        static_mode.set_rgb(r, g, b)
+    elif action == "set_brightness":
+        value = max(0, min(255, int(data.get("value", current_brightness))))
+        current_brightness = value
+        strip.setBrightness(current_brightness)
+        strip.show()
     elif action == "get_state":
         pass  # state is broadcast after every command anyway
 
@@ -274,7 +294,7 @@ async def handler(websocket):
             except (json.JSONDecodeError, AttributeError):
                 continue
             async with command_lock:
-                await handle_command(action)
+                await handle_command(action, data)
     except websockets.ConnectionClosed:
         pass
     finally:

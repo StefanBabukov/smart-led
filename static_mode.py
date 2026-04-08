@@ -4,16 +4,18 @@ class StaticMode:
     def __init__(self, strip):
         self.strip = strip
         self.hue = 0
-        self.brightness = 255
+        self.current_rgb = (255, 0, 0)
+        self.use_rgb = False
         self.show_color()
 
     def show_color(self):
-        r, g, b = self.hue_to_rgb(self.hue)
-        r = (r*self.brightness)//255
-        g = (g*self.brightness)//255
-        b = (b*self.brightness)//255
+        if self.use_rgb:
+            r, g, b = self.current_rgb
+        else:
+            r, g, b = self.hue_to_rgb(self.hue)
+            self.current_rgb = (r, g, b)
         for i in range(self.strip.numPixels()):
-            self.strip.setPixelColor(i, Color(r,g,b))
+            self.strip.setPixelColor(i, Color(r, g, b))
         self.strip.show()
 
     def hue_to_rgb(self, hue):
@@ -33,11 +35,21 @@ class StaticMode:
             r, g, b = c, 0, x
         return (r, g, b)
 
+    def set_rgb(self, r, g, b):
+        self.current_rgb = (r, g, b)
+        self.use_rgb = True
+        self.show_color()
+
+    def get_rgb(self):
+        return self.current_rgb
+
     def increase_hue(self):
+        self.use_rgb = False
         self.hue = (self.hue + 10) % 360
         self.show_color()
 
     def decrease_hue(self):
+        self.use_rgb = False
         self.hue = (self.hue - 10) % 360
         self.show_color()
 
