@@ -10,6 +10,7 @@ import {
   ScrollView,
   Modal,
   ActivityIndicator,
+  Dimensions,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -17,6 +18,13 @@ const STORAGE_KEY = '@smart_led_ip';
 const WS_PORT = 8765;
 const RECONNECT_DELAY = 2000;
 const MAX_LOGS = 100;
+const NUM_LEDS = 300;
+const SCREEN_WIDTH = Dimensions.get('window').width;
+const WHEEL_SEND_INTERVAL = 32;
+const BRIGHTNESS_SEND_INTERVAL = 32;
+const PAINT_SEND_INTERVAL = 32;
+const FREE_PAINT_BRUSH_RADIUS = 1;
+const NOISY_ACTIONS = new Set(['set_color', 'set_brightness', 'set_pixel_range']);
 
 // --- Color Wheel Helpers ---
 
@@ -56,15 +64,15 @@ const WHEEL_SIZE_LARGE = 340;
 function generateWheelSegments(wheelSize) {
   const segments = [];
   const wheelRadius = wheelSize / 2;
-  const dotSize = 8;
-  const ringSpacing = 5;
-  const ringCount = Math.floor((wheelRadius - 15) / ringSpacing);
+  const dotSize = wheelSize > 300 ? 8 : 9;
+  const ringSpacing = wheelSize > 300 ? 7 : 6;
+  const ringCount = Math.floor((wheelRadius - 14) / ringSpacing);
 
   for (let ring = 0; ring < ringCount; ring++) {
-    const radius = 15 + ring * ringSpacing;
+    const radius = 14 + ring * ringSpacing;
     const saturation = Math.min(1, radius / (wheelRadius - 5));
     const circumference = 2 * Math.PI * radius;
-    const count = Math.max(12, Math.floor(circumference / (dotSize * 0.6)));
+    const count = Math.max(12, Math.floor(circumference / (dotSize * 1.4)));
 
     for (let i = 0; i < count; i++) {
       const hue = (i / count) * 360;
@@ -104,6 +112,7 @@ export default function App() {
   const [foundDevices, setFoundDevices] = useState([]);
   const [showScanModal, setShowScanModal] = useState(false);
   const scanCancelled = useRef(false);
+  const [scrollEnabled, setScrollEnabled] = useState(true);
 
   const [wheelExpanded, setWheelExpanded] = useState(false);
   const wheelSize = wheelExpanded ? WHEEL_SIZE_LARGE : WHEEL_SIZE_SMALL;
@@ -113,21 +122,47 @@ export default function App() {
   const reconnectTimer = useRef(null);
   const intentionalClose = useRef(false);
   const logScrollRef = useRef(null);
+
+  // Brightness: use local state to avoid jiggle from server broadcasts
   const lastBrightnessSend = useRef(0);
   const brightnessBarLayout = useRef({ x: 0, width: 0 });
-  const isDraggingBrightness = useRef(false);
   const [localBrightness, setLocalBrightness] = useState(null);
+  const isDraggingBrightness = useRef(false);
+  const brightnessReleaseTimer = useRef(null);
+  const lastBrightnessValue = useRef(null);
 
   // Free paint state
   const [freePaintMode, setFreePaintMode] = useState(false);
   const [ledColors, setLedColors] = useState(
-    () => Array.from({ length: 300 }, () => ({ r: 0, g: 0, b: 0 }))
+    () => Array.from({ length: NUM_LEDS }, () => ({ r: 0, g: 0, b: 0 }))
   );
   const [paintColor, setPaintColor] = useState({ r: 255, g: 0, b: 0 });
   const lastPaintSend = useRef(0);
   const stripBarLayout = useRef({ x: 0, width: 0 });
+  const lastPaintIndex = useRef(null);
+  const lastWheelSend = useRef(0);
+  const lastWheelColor = useRef('');
 
   const wheelSegments = useMemo(() => generateWheelSegments(wheelSize), [wheelSize]);
+  const wheelDotViews = useMemo(() => (
+    wheelSegments.map((seg, i) => (
+      <View
+        key={i}
+        pointerEvents="none"
+        style={[
+          styles.wheelDot,
+          {
+            left: seg.x,
+            top: seg.y,
+            width: seg.size,
+            height: seg.size,
+            borderRadius: seg.size / 2,
+            backgroundColor: seg.color,
+          },
+        ]}
+      />
+    ))
+  ), [wheelSegments]);
 
   const addLog = useCallback((msg, level = 'info') => {
     const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -148,6 +183,10 @@ export default function App() {
     if (reconnectTimer.current) {
       clearTimeout(reconnectTimer.current);
       reconnectTimer.current = null;
+    }
+    if (brightnessReleaseTimer.current) {
+      clearTimeout(brightnessReleaseTimer.current);
+      brightnessReleaseTimer.current = null;
     }
     if (wsRef.current) {
       intentionalClose.current = true;
@@ -180,7 +219,11 @@ export default function App() {
         const data = JSON.parse(e.data);
         if (data.type === 'state') {
           setLedState(data);
-          addLog(`State: ${data.effect_name} | brightness=${data.brightness} | mode=${data.mode}`);
+          // Only sync brightness from server when not dragging
+          if (!isDraggingBrightness.current) {
+            setLocalBrightness(data.brightness);
+            lastBrightnessValue.current = data.brightness;
+          }
         } else if (data.type === 'strip_colors') {
           setLedColors(data.colors.map(c => ({ r: c[0], g: c[1], b: c[2] })));
         }
@@ -210,10 +253,12 @@ export default function App() {
     cleanup();
   }, [cleanup, addLog]);
 
-  const send = useCallback((action, extra = {}) => {
+  const send = useCallback((action, extra = {}, options = {}) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action, ...extra }));
-      addLog(`Sent: ${action}${Object.keys(extra).length ? ' ' + JSON.stringify(extra) : ''}`);
+      if (!options.silent && !NOISY_ACTIONS.has(action)) {
+        addLog(`Sent: ${action}${Object.keys(extra).length ? ' ' + JSON.stringify(extra) : ''}`);
+      }
     } else {
       addLog(`Cannot send "${action}" - not connected`, 'error');
     }
@@ -292,21 +337,29 @@ export default function App() {
     connect(deviceIp);
   }, [connect]);
 
+  const beginInteractiveGesture = useCallback(() => {
+    setScrollEnabled(false);
+  }, []);
+
+  const endInteractiveGesture = useCallback(() => {
+    setScrollEnabled(true);
+  }, []);
+
   // --- Color Wheel Touch ---
-  const handleWheelTouch = useCallback((evt) => {
+  const handleWheelTouch = useCallback((evt, forceSend = false) => {
     const { locationX, locationY } = evt.nativeEvent;
     const dx = locationX - wheelRadius;
     const dy = locationY - wheelRadius;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
-    if (dist > wheelRadius + 5) return;
+    if (dist > wheelRadius) return;
 
     let r, g, b;
-    if (dist < 20) {
+    if (dist < Math.max(18, wheelRadius * 0.18)) {
       r = 255; g = 255; b = 255;
     } else {
       const angle = Math.atan2(dy, dx);
-      let hue = ((angle * 180) / Math.PI + 90 + 360) % 360;
+      const hue = ((angle * 180) / Math.PI + 90 + 360) % 360;
       const saturation = Math.min(1, dist / wheelRadius);
       ({ r, g, b } = hsvToRgb(hue, saturation, 1));
     }
@@ -314,44 +367,79 @@ export default function App() {
     if (freePaintMode) {
       setPaintColor({ r, g, b });
     } else {
-      send('set_color', { r, g, b });
+      const now = Date.now();
+      const colorKey = `${r},${g},${b}`;
+      if (
+        forceSend ||
+        (colorKey !== lastWheelColor.current && now - lastWheelSend.current >= WHEEL_SEND_INTERVAL)
+      ) {
+        lastWheelColor.current = colorKey;
+        lastWheelSend.current = now;
+        send('set_color', { r, g, b }, { silent: true });
+      }
     }
   }, [send, wheelRadius, freePaintMode]);
 
-  // --- Brightness Slider Touch ---
-  const handleBrightnessStart = useCallback((evt) => {
-    isDraggingBrightness.current = true;
-    const x = evt.nativeEvent.locationX;
-    const width = brightnessBarLayout.current.width;
-    if (width <= 0) return;
-    const value = Math.round(Math.max(0, Math.min(255, (x / width) * 255)));
-    setLocalBrightness(value);
-    send('set_brightness', { value });
-    lastBrightnessSend.current = Date.now();
-  }, [send]);
+  const handleWheelGrant = useCallback((evt) => {
+    beginInteractiveGesture();
+    handleWheelTouch(evt, true);
+  }, [beginInteractiveGesture, handleWheelTouch]);
 
-  const handleBrightnessMove = useCallback((evt) => {
+  const handleWheelRelease = useCallback((evt) => {
+    handleWheelTouch(evt, true);
+    endInteractiveGesture();
+  }, [endInteractiveGesture, handleWheelTouch]);
+
+  // --- Brightness Slider Touch ---
+  const updateBrightnessFromTouch = useCallback((evt, forceSend = false) => {
     const x = evt.nativeEvent.locationX;
     const width = brightnessBarLayout.current.width;
-    if (width <= 0) return;
+    if (width <= 0) return null;
     const value = Math.round(Math.max(0, Math.min(255, (x / width) * 255)));
     setLocalBrightness(value);
     const now = Date.now();
-    if (now - lastBrightnessSend.current > 50) {
+    if (
+      forceSend ||
+      (value !== lastBrightnessValue.current && now - lastBrightnessSend.current >= BRIGHTNESS_SEND_INTERVAL)
+    ) {
       lastBrightnessSend.current = now;
-      send('set_brightness', { value });
+      lastBrightnessValue.current = value;
+      send('set_brightness', { value }, { silent: true });
     }
+    return value;
   }, [send]);
 
+  const handleBrightnessStart = useCallback((evt) => {
+    if (brightnessReleaseTimer.current) {
+      clearTimeout(brightnessReleaseTimer.current);
+      brightnessReleaseTimer.current = null;
+    }
+    isDraggingBrightness.current = true;
+    beginInteractiveGesture();
+    updateBrightnessFromTouch(evt, true);
+  }, [beginInteractiveGesture, updateBrightnessFromTouch]);
+
+  const handleBrightnessMove = useCallback((evt) => {
+    updateBrightnessFromTouch(evt);
+  }, [updateBrightnessFromTouch]);
+
   const handleBrightnessRelease = useCallback((evt) => {
-    const x = evt.nativeEvent.locationX;
-    const width = brightnessBarLayout.current.width;
-    if (width <= 0) return;
-    const value = Math.round(Math.max(0, Math.min(255, (x / width) * 255)));
-    send('set_brightness', { value });
+    updateBrightnessFromTouch(evt, true);
+    brightnessReleaseTimer.current = setTimeout(() => {
+      isDraggingBrightness.current = false;
+      brightnessReleaseTimer.current = null;
+    }, 150);
+    endInteractiveGesture();
+  }, [endInteractiveGesture, updateBrightnessFromTouch]);
+
+  const handleBrightnessTerminate = useCallback(() => {
+    if (brightnessReleaseTimer.current) {
+      clearTimeout(brightnessReleaseTimer.current);
+      brightnessReleaseTimer.current = null;
+    }
     isDraggingBrightness.current = false;
-    setLocalBrightness(null);
-  }, [send]);
+    endInteractiveGesture();
+  }, [endInteractiveGesture]);
 
   // --- Free Paint ---
   const toggleFreePaint = useCallback(() => {
@@ -362,44 +450,62 @@ export default function App() {
     }
   }, [freePaintMode, send]);
 
-  const handleStripTouch = useCallback((evt) => {
-    const x = evt.nativeEvent.locationX;
-    const width = stripBarLayout.current.width;
-    if (width <= 0) return;
-
-    const ledIndex = Math.floor(Math.max(0, Math.min(299, (x / width) * 300)));
+  const paintStripRange = useCallback((fromIndex, toIndex, forceSend = false) => {
     const { r, g, b } = paintColor;
+    const brushStart = Math.max(0, Math.min(fromIndex, toIndex) - FREE_PAINT_BRUSH_RADIUS);
+    const brushEnd = Math.min(NUM_LEDS - 1, Math.max(fromIndex, toIndex) + FREE_PAINT_BRUSH_RADIUS);
 
     setLedColors(prev => {
       const next = [...prev];
-      next[ledIndex] = { r, g, b };
+      for (let i = brushStart; i <= brushEnd; i++) {
+        next[i] = { r, g, b };
+      }
       return next;
     });
 
     const now = Date.now();
-    if (now - lastPaintSend.current > 50) {
+    if (forceSend || now - lastPaintSend.current >= PAINT_SEND_INTERVAL) {
       lastPaintSend.current = now;
-      send('set_pixel_range', { start: ledIndex, end: ledIndex, r, g, b });
+      send('set_pixel_range', { start: brushStart, end: brushEnd, r, g, b }, { silent: true });
     }
   }, [paintColor, send]);
 
-  const handleStripRelease = useCallback((evt) => {
+  const getStripLedIndex = useCallback((evt) => {
     const x = evt.nativeEvent.locationX;
     const width = stripBarLayout.current.width;
-    if (width <= 0) return;
-    const ledIndex = Math.floor(Math.max(0, Math.min(299, (x / width) * 300)));
-    const { r, g, b } = paintColor;
-    send('set_pixel_range', { start: ledIndex, end: ledIndex, r, g, b });
-  }, [paintColor, send]);
+    if (width <= 0) return null;
+    return Math.floor(Math.max(0, Math.min(NUM_LEDS - 1, (x / width) * NUM_LEDS)));
+  }, []);
+
+  const handleStripTouch = useCallback((evt, forceSend = false) => {
+    const ledIndex = getStripLedIndex(evt);
+    if (ledIndex === null) return;
+
+    const startIndex = lastPaintIndex.current ?? ledIndex;
+    paintStripRange(startIndex, ledIndex, forceSend);
+    lastPaintIndex.current = ledIndex;
+  }, [getStripLedIndex, paintStripRange]);
+
+  const handleStripGrant = useCallback((evt) => {
+    beginInteractiveGesture();
+    lastPaintIndex.current = null;
+    handleStripTouch(evt, true);
+  }, [beginInteractiveGesture, handleStripTouch]);
+
+  const handleStripRelease = useCallback((evt) => {
+    handleStripTouch(evt, true);
+    lastPaintIndex.current = null;
+    endInteractiveGesture();
+  }, [endInteractiveGesture, handleStripTouch]);
 
   const resetFreePaint = useCallback(() => {
-    const black = Array.from({ length: 300 }, () => ({ r: 0, g: 0, b: 0 }));
+    const black = Array.from({ length: NUM_LEDS }, () => ({ r: 0, g: 0, b: 0 }));
     setLedColors(black);
-    send('set_pixel_range', { start: 0, end: 299, r: 0, g: 0, b: 0 });
+    send('set_pixel_range', { start: 0, end: NUM_LEDS - 1, r: 0, g: 0, b: 0 }, { silent: true });
   }, [send]);
 
   // --- Derived values ---
-  const displayBrightness = isDraggingBrightness.current && localBrightness !== null ? localBrightness : ledState.brightness;
+  const displayBrightness = localBrightness !== null ? localBrightness : ledState.brightness;
   const brightnessPercent = Math.round((displayBrightness / 255) * 100);
   const barWidth = `${brightnessPercent}%`;
   const logColors = { info: '#888', success: '#4f4', warn: '#fb0', error: '#f44' };
@@ -408,10 +514,19 @@ export default function App() {
     ? rgbToHex(ledState.color.r, ledState.color.g, ledState.color.b)
     : '#ff0000';
 
+  // Compute strip LED width to fit screen
+  const stripPadding = 40; // account for parent padding
+  const stripWidth = SCREEN_WIDTH - stripPadding;
+  const ledWidth = stripWidth / NUM_LEDS;
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#111" />
-      <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollContainer}
+        contentContainerStyle={styles.scrollContent}
+        scrollEnabled={scrollEnabled}
+      >
 
         {/* Title */}
         <Text style={styles.title}>SMART LED REMOTE</Text>
@@ -559,29 +674,25 @@ export default function App() {
             {/* Color Wheel */}
             <View
               style={[styles.wheelContainer, { width: wheelSize, height: wheelSize }]}
+              onStartShouldSetResponderCapture={() => true}
+              onMoveShouldSetResponderCapture={() => true}
               onStartShouldSetResponder={() => true}
               onMoveShouldSetResponder={() => true}
-              onResponderGrant={handleWheelTouch}
+              onResponderTerminationRequest={() => false}
+              onResponderGrant={handleWheelGrant}
               onResponderMove={handleWheelTouch}
+              onResponderRelease={handleWheelRelease}
+              onResponderTerminate={endInteractiveGesture}
             >
-              <View style={[styles.wheelBg, { width: wheelSize, height: wheelSize, borderRadius: wheelSize / 2 }]} />
-              {wheelSegments.map((seg, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.wheelDot,
-                    {
-                      left: seg.x,
-                      top: seg.y,
-                      width: seg.size,
-                      height: seg.size,
-                      borderRadius: seg.size / 2,
-                      backgroundColor: seg.color,
-                    },
-                  ]}
-                />
-              ))}
-              <View style={[styles.wheelCenter, { left: wheelSize / 2 - 16, top: wheelSize / 2 - 16 }]} />
+              <View
+                pointerEvents="none"
+                style={[styles.wheelBg, { width: wheelSize, height: wheelSize, borderRadius: wheelSize / 2 }]}
+              />
+              {wheelDotViews}
+              <View
+                pointerEvents="none"
+                style={[styles.wheelCenter, { left: wheelSize / 2 - 16, top: wheelSize / 2 - 16 }]}
+              />
             </View>
 
             {/* Expand / Shrink toggle */}
@@ -626,30 +737,36 @@ export default function App() {
             {freePaintMode && (
               <View style={styles.stripSection}>
                 <Text style={styles.stripLabel}>LED Strip (drag to paint)</Text>
-                <ScrollView horizontal style={styles.stripScroll} showsHorizontalScrollIndicator>
-                  <View
-                    style={styles.stripBar}
-                    onLayout={(e) => { stripBarLayout.current = e.nativeEvent.layout; }}
-                    onStartShouldSetResponder={() => true}
-                    onMoveShouldSetResponder={() => true}
-                    onResponderGrant={handleStripTouch}
-                    onResponderMove={handleStripTouch}
-                    onResponderRelease={handleStripRelease}
-                  >
-                    {ledColors.map((c, i) => (
-                      <View
-                        key={i}
-                        style={{
-                          width: 4,
-                          height: 40,
-                          backgroundColor: (c.r === 0 && c.g === 0 && c.b === 0)
-                            ? '#1a1a1a'
-                            : rgbToHex(c.r, c.g, c.b),
-                        }}
-                      />
-                    ))}
-                  </View>
-                </ScrollView>
+                <View
+                  style={[styles.stripBar, { width: stripWidth }]}
+                  onLayout={(e) => { stripBarLayout.current = e.nativeEvent.layout; }}
+                  onStartShouldSetResponderCapture={() => true}
+                  onMoveShouldSetResponderCapture={() => true}
+                  onStartShouldSetResponder={() => true}
+                  onMoveShouldSetResponder={() => true}
+                  onResponderTerminationRequest={() => false}
+                  onResponderGrant={handleStripGrant}
+                  onResponderMove={handleStripTouch}
+                  onResponderRelease={handleStripRelease}
+                  onResponderTerminate={() => {
+                    lastPaintIndex.current = null;
+                    endInteractiveGesture();
+                  }}
+                >
+                  {ledColors.map((c, i) => (
+                    <View
+                      key={i}
+                      pointerEvents="none"
+                      style={{
+                        width: ledWidth,
+                        height: 50,
+                        backgroundColor: (c.r === 0 && c.g === 0 && c.b === 0)
+                          ? '#1a1a1a'
+                          : rgbToHex(c.r, c.g, c.b),
+                      }}
+                    />
+                  ))}
+                </View>
                 <TouchableOpacity
                   style={styles.resetBtn}
                   onPress={resetFreePaint}
@@ -671,14 +788,18 @@ export default function App() {
           <View
             style={styles.brightnessTrack}
             onLayout={(e) => { brightnessBarLayout.current = e.nativeEvent.layout; }}
+            onStartShouldSetResponderCapture={() => true}
+            onMoveShouldSetResponderCapture={() => true}
             onStartShouldSetResponder={() => true}
             onMoveShouldSetResponder={() => true}
+            onResponderTerminationRequest={() => false}
             onResponderGrant={handleBrightnessStart}
             onResponderMove={handleBrightnessMove}
             onResponderRelease={handleBrightnessRelease}
+            onResponderTerminate={handleBrightnessTerminate}
           >
-            <View style={[styles.brightnessFill, { width: barWidth }]} />
-            <View style={[styles.brightnessThumb, { left: barWidth }]} />
+            <View pointerEvents="none" style={[styles.brightnessFill, { width: barWidth }]} />
+            <View pointerEvents="none" style={[styles.brightnessThumb, { left: barWidth }]} />
           </View>
         </View>
 
@@ -1090,15 +1211,14 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     letterSpacing: 1,
   },
-  stripScroll: {
+  stripBar: {
+    flexDirection: 'row',
+    height: 50,
     borderRadius: 8,
+    overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#333',
     backgroundColor: '#0a0a0a',
-  },
-  stripBar: {
-    flexDirection: 'row',
-    height: 40,
   },
   resetBtn: {
     marginTop: 10,
