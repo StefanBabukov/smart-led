@@ -11,7 +11,7 @@ from animations import *
 from static_mode import StaticMode
 from fire import fire_step
 from color_bounce import color_bounce_step
-from led_operations import set_all
+from led_operations import set_all, set_pixel, get_pixel
 from halloween_scene import halloween_scene_step, reset_halloween_scene_state
 from xmas_scene import xmas_scene_step, reset_xmas_scene_state
 
@@ -129,7 +129,7 @@ effects = {
     12: lambda: start_effect(rainbow_cycle_step),
     13: lambda: start_effect(theater_chase_step, 255, 0, 0),
     14: lambda: start_effect(theater_chase_rainbow_step),
-    15: lambda: start_effect(fire_step, 80, 220),
+    15: lambda: start_effect(fire_step),
     16: lambda: start_effect(bouncing_colored_balls_step, 1, [(255, 0, 0)], False),
     17: lambda: start_effect(bouncing_colored_balls_step, 20, [(255, 0, 0), (255, 255, 255), (0, 0, 255)], False),
     18: lambda: start_effect(meteor_rain_step, 255, 255, 255, 10, 64, True, 30),
@@ -277,6 +277,21 @@ async def handle_command(action, data):
         current_brightness = value
         strip.setBrightness(current_brightness)
         strip.show()
+    elif action == "set_pixel_range":
+        start = max(0, min(LED_COUNT - 1, int(data.get("start", 0))))
+        end = max(0, min(LED_COUNT - 1, int(data.get("end", start))))
+        r = max(0, min(255, int(data.get("r", 255))))
+        g = max(0, min(255, int(data.get("g", 255))))
+        b = max(0, min(255, int(data.get("b", 255))))
+        if current_mode == 'animation':
+            stop_animations()
+        current_mode = 'static'
+        animations_enabled = True
+        for i in range(start, end + 1):
+            set_pixel(strip, i, r, g, b)
+        strip.show()
+    elif action == "get_strip_colors":
+        pass  # handled directly in handler()
     elif action == "get_state":
         pass  # state is broadcast after every command anyway
 
@@ -295,6 +310,14 @@ async def handler(websocket):
                 continue
             async with command_lock:
                 await handle_command(action, data)
+                if action == "get_strip_colors":
+                    colors = []
+                    for i in range(LED_COUNT):
+                        colors.append(list(get_pixel(strip, i)))
+                    await websocket.send(json.dumps({
+                        "type": "strip_colors",
+                        "colors": colors,
+                    }))
     except websockets.ConnectionClosed:
         pass
     finally:

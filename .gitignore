@@ -11,7 +11,7 @@ node_modules/
 SmartLED/android/app/build/
 SmartLED/android/.gradle/
 SmartLED/.expo/
-SmartLED/*
+SmartLED/
 # OS
 .DS_Store
 Thumbs.db

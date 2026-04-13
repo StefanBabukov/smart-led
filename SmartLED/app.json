@@ -4,12 +4,20 @@
     "slug": "smart-led",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": null,
     "userInterfaceStyle": "dark",
     "android": {
       "package": "com.smartled.remote",
-      "permissions": ["android.permission.INTERNET"]
+      "permissions": [
+        "android.permission.INTERNET"
+      ]
     },
-    "plugins": []
+    "plugins": [
+      ["expo-build-properties", {
+        "android": {
+          "kotlinVersion": "1.9.25"
+        }
+      }]
+    ],
+    "newArchEnabled": false
   }
 }
