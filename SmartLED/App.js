@@ -23,8 +23,15 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const WHEEL_SEND_INTERVAL = 32;
 const BRIGHTNESS_SEND_INTERVAL = 32;
 const PAINT_SEND_INTERVAL = 32;
+const GAME_MOVE_REPEAT_INTERVAL = 85;
 const FREE_PAINT_BRUSH_RADIUS = 1;
 const NOISY_ACTIONS = new Set(['set_color', 'set_animation_color', 'set_brightness', 'set_pixel_range']);
+const GAME_ACTION_MAP = {
+  move_left: 'move_right',
+  move_right: 'move_left',
+  shoot_left: 'shoot_right',
+  shoot_right: 'shoot_left',
+};
 
 // --- Color Wheel Helpers ---
 
@@ -154,6 +161,7 @@ export default function App() {
   const pendingPaintRange = useRef(null);
   const lastWheelSend = useRef(0);
   const lastWheelColor = useRef('');
+  const gameHoldTimer = useRef(null);
 
   const wheelSegments = useMemo(() => generateWheelSegments(wheelSize), [wheelSize]);
   const wheelDotViews = useMemo(() => (
@@ -200,12 +208,17 @@ export default function App() {
       clearTimeout(brightnessReleaseTimer.current);
       brightnessReleaseTimer.current = null;
     }
+    if (gameHoldTimer.current) {
+      clearInterval(gameHoldTimer.current);
+      gameHoldTimer.current = null;
+    }
     if (wsRef.current) {
       intentionalClose.current = true;
       wsRef.current.close();
       wsRef.current = null;
     }
     setConnected(false);
+    setScrollEnabled(true);
   }, []);
 
   const connect = useCallback((connectIp) => {
@@ -356,6 +369,45 @@ export default function App() {
   const endInteractiveGesture = useCallback(() => {
     setScrollEnabled(true);
   }, []);
+
+  const clearGameHold = useCallback(() => {
+    if (gameHoldTimer.current) {
+      clearInterval(gameHoldTimer.current);
+      gameHoldTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isGameMode) {
+      clearGameHold();
+      setScrollEnabled(true);
+    }
+  }, [clearGameHold, isGameMode]);
+
+  const sendGameAction = useCallback((action) => {
+    const mappedAction = GAME_ACTION_MAP[action] || action;
+    send(mappedAction, {}, { silent: true });
+  }, [send]);
+
+  const startGameMoveHold = useCallback((action) => {
+    if (!isGameMode) return;
+    clearGameHold();
+    beginInteractiveGesture();
+    sendGameAction(action);
+    gameHoldTimer.current = setInterval(() => {
+      sendGameAction(action);
+    }, GAME_MOVE_REPEAT_INTERVAL);
+  }, [beginInteractiveGesture, clearGameHold, isGameMode, sendGameAction]);
+
+  const stopGameMoveHold = useCallback(() => {
+    clearGameHold();
+    endInteractiveGesture();
+  }, [clearGameHold, endInteractiveGesture]);
+
+  const fireGameShot = useCallback((action) => {
+    if (!isGameMode) return;
+    sendGameAction(action);
+  }, [isGameMode, sendGameAction]);
 
   // --- Color Wheel Touch ---
   const handleWheelTouch = useCallback((evt, forceSend = false) => {
@@ -793,7 +845,7 @@ export default function App() {
           <View style={styles.gameSection}>
             <Text style={styles.gameTitle}>Zombie Defense</Text>
             <Text style={styles.gameSubtitle}>
-              Hold the middle line by moving left and right, then shoot incoming zombies from either side.
+              Hold the move buttons to slide continuously. Left and right are mirrored to match the strip’s real physical direction.
             </Text>
             <View style={styles.gameMetaRow}>
               <View style={styles.gameMetaCard}>
@@ -813,14 +865,14 @@ export default function App() {
               <View style={styles.gameButtonRow}>
                 <TouchableOpacity
                   style={styles.gameBtn}
-                  onPress={() => send('shoot_left', {}, { silent: true })}
+                  onPress={() => fireGameShot('shoot_left')}
                   activeOpacity={0.7}
                 >
                   <Text style={styles.gameBtnText}>SHOOT LEFT</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.gameBtn}
-                  onPress={() => send('shoot_right', {}, { silent: true })}
+                  onPress={() => fireGameShot('shoot_right')}
                   activeOpacity={0.7}
                 >
                   <Text style={styles.gameBtnText}>SHOOT RIGHT</Text>
@@ -829,14 +881,16 @@ export default function App() {
               <View style={styles.gameButtonRow}>
                 <TouchableOpacity
                   style={[styles.gameBtn, styles.gameMoveBtn]}
-                  onPress={() => send('move_left', {}, { silent: true })}
+                  onPressIn={() => startGameMoveHold('move_left')}
+                  onPressOut={stopGameMoveHold}
                   activeOpacity={0.7}
                 >
                   <Text style={styles.gameBtnText}>MOVE LEFT</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.gameBtn, styles.gameMoveBtn]}
-                  onPress={() => send('move_right', {}, { silent: true })}
+                  onPressIn={() => startGameMoveHold('move_right')}
+                  onPressOut={stopGameMoveHold}
                   activeOpacity={0.7}
                 >
                   <Text style={styles.gameBtnText}>MOVE RIGHT</Text>

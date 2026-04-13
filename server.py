@@ -183,6 +183,11 @@ EFFECT_DEFINITIONS = [
         "runner": lambda: start_effect(meteor_current_step),
     },
     {
+        "key": "death_show",
+        "name": "Death Show",
+        "runner": lambda: start_effect(death_show_step),
+    },
+    {
         "key": "christmas_scene",
         "name": "Christmas Scene",
         "runner": lambda: start_effect(xmas_scene_step),
@@ -225,6 +230,7 @@ def reset_states():
     )
     meteor_rain_state.update({"pos": 0.0, "speed": 2.2})
     wheel_step_state.update({"pos": 0})
+    reset_death_show_state()
 
 
 def run_animation(effect_function, *args, **kwargs):
