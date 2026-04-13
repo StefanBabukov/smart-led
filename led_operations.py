@@ -1,11 +1,28 @@
 from rpi_ws281x import Color
 
 def set_pixel(strip, pixel, red, green, blue):
-    strip.setPixelColor(pixel, Color(red, green, blue))
+    strip.setPixelColor(
+        pixel,
+        Color(
+            max(0, min(255, int(red))),
+            max(0, min(255, int(green))),
+            max(0, min(255, int(blue))),
+        ),
+    )
+
+def fill_all(strip, red, green, blue):
+    for i in range(strip.numPixels()):
+        strip.setPixelColor(
+            i,
+            Color(
+                max(0, min(255, int(red))),
+                max(0, min(255, int(green))),
+                max(0, min(255, int(blue))),
+            ),
+        )
 
 def set_all(strip, red, green, blue):
-    for i in range(strip.numPixels()):
-        strip.setPixelColor(i, Color(red, green, blue))
+    fill_all(strip, red, green, blue)
     strip.show()
 
 def fade_to_black(strip, led_no, fade_value):

@@ -1,7 +1,6 @@
-import time
 import random
 import math
-from led_operations import set_pixel, set_all, fade_to_black
+from led_operations import fade_to_black, fill_all, set_pixel
 
 # Global state for the Christmas scene
 xmas_scene_state = {
@@ -332,7 +331,7 @@ def xmas_scene_step(strip):
 
     if not st['initialized']:
         st['initialized'] = True
-        set_all(strip,0,0,0)
+        fill_all(strip,0,0,0)
 
     st['frame_count'] += 1
 

@@ -24,7 +24,7 @@ const WHEEL_SEND_INTERVAL = 32;
 const BRIGHTNESS_SEND_INTERVAL = 32;
 const PAINT_SEND_INTERVAL = 32;
 const FREE_PAINT_BRUSH_RADIUS = 1;
-const NOISY_ACTIONS = new Set(['set_color', 'set_brightness', 'set_pixel_range']);
+const NOISY_ACTIONS = new Set(['set_color', 'set_animation_color', 'set_brightness', 'set_pixel_range']);
 
 // --- Color Wheel Helpers ---
 
@@ -99,11 +99,16 @@ export default function App() {
   const [ledState, setLedState] = useState({
     mode: 'animation',
     effect_name: '',
+    effect_key: null,
     effect_index: 0,
     brightness: 255,
     enabled: true,
     total_effects: 20,
     color: null,
+    animation_color: null,
+    supports_animation_color: false,
+    supports_ball_count: false,
+    ball_count: 3,
   });
 
   // Scan state
@@ -117,6 +122,8 @@ export default function App() {
   const [wheelExpanded, setWheelExpanded] = useState(false);
   const wheelSize = wheelExpanded ? WHEEL_SIZE_LARGE : WHEEL_SIZE_SMALL;
   const wheelRadius = wheelSize / 2;
+  const animationColorSupported = ledState.mode === 'animation' && ledState.supports_animation_color;
+  const ballCountSupported = ledState.mode === 'animation' && ledState.supports_ball_count;
 
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
@@ -140,6 +147,7 @@ export default function App() {
   const lastPaintSend = useRef(0);
   const stripBarLayout = useRef({ x: 0, width: 0 });
   const lastPaintIndex = useRef(null);
+  const pendingPaintRange = useRef(null);
   const lastWheelSend = useRef(0);
   const lastWheelColor = useRef('');
 
@@ -364,7 +372,18 @@ export default function App() {
       ({ r, g, b } = hsvToRgb(hue, saturation, 1));
     }
 
-    if (freePaintMode) {
+    if (animationColorSupported) {
+      const now = Date.now();
+      const colorKey = `anim:${r},${g},${b}`;
+      if (
+        forceSend ||
+        (colorKey !== lastWheelColor.current && now - lastWheelSend.current >= WHEEL_SEND_INTERVAL)
+      ) {
+        lastWheelColor.current = colorKey;
+        lastWheelSend.current = now;
+        send('set_animation_color', { r, g, b }, { silent: true });
+      }
+    } else if (freePaintMode) {
       setPaintColor({ r, g, b });
     } else {
       const now = Date.now();
@@ -378,7 +397,7 @@ export default function App() {
         send('set_color', { r, g, b }, { silent: true });
       }
     }
-  }, [send, wheelRadius, freePaintMode]);
+  }, [animationColorSupported, freePaintMode, send, wheelRadius]);
 
   const handleWheelGrant = useCallback((evt) => {
     beginInteractiveGesture();
@@ -444,11 +463,27 @@ export default function App() {
   // --- Free Paint ---
   const toggleFreePaint = useCallback(() => {
     const entering = !freePaintMode;
+    pendingPaintRange.current = null;
+    lastPaintIndex.current = null;
     setFreePaintMode(entering);
     if (entering) {
       send('get_strip_colors');
     }
   }, [freePaintMode, send]);
+
+  const flushPendingPaint = useCallback((forceSend = false) => {
+    const pending = pendingPaintRange.current;
+    if (!pending) return;
+
+    const now = Date.now();
+    if (!forceSend && now - lastPaintSend.current < PAINT_SEND_INTERVAL) {
+      return;
+    }
+
+    lastPaintSend.current = now;
+    pendingPaintRange.current = null;
+    send('set_pixel_range', pending, { silent: true });
+  }, [send]);
 
   const paintStripRange = useCallback((fromIndex, toIndex, forceSend = false) => {
     const { r, g, b } = paintColor;
@@ -463,12 +498,20 @@ export default function App() {
       return next;
     });
 
-    const now = Date.now();
-    if (forceSend || now - lastPaintSend.current >= PAINT_SEND_INTERVAL) {
-      lastPaintSend.current = now;
-      send('set_pixel_range', { start: brushStart, end: brushEnd, r, g, b }, { silent: true });
+    if (pendingPaintRange.current) {
+      pendingPaintRange.current = {
+        start: Math.min(pendingPaintRange.current.start, brushStart),
+        end: Math.max(pendingPaintRange.current.end, brushEnd),
+        r,
+        g,
+        b,
+      };
+    } else {
+      pendingPaintRange.current = { start: brushStart, end: brushEnd, r, g, b };
     }
-  }, [paintColor, send]);
+
+    flushPendingPaint(forceSend);
+  }, [flushPendingPaint, paintColor]);
 
   const getStripLedIndex = useCallback((evt) => {
     const x = evt.nativeEvent.locationX;
@@ -489,18 +532,22 @@ export default function App() {
   const handleStripGrant = useCallback((evt) => {
     beginInteractiveGesture();
     lastPaintIndex.current = null;
+    pendingPaintRange.current = null;
     handleStripTouch(evt, true);
   }, [beginInteractiveGesture, handleStripTouch]);
 
   const handleStripRelease = useCallback((evt) => {
-    handleStripTouch(evt, true);
+    handleStripTouch(evt);
+    flushPendingPaint(true);
     lastPaintIndex.current = null;
+    pendingPaintRange.current = null;
     endInteractiveGesture();
-  }, [endInteractiveGesture, handleStripTouch]);
+  }, [endInteractiveGesture, flushPendingPaint, handleStripTouch]);
 
   const resetFreePaint = useCallback(() => {
     const black = Array.from({ length: NUM_LEDS }, () => ({ r: 0, g: 0, b: 0 }));
     setLedColors(black);
+    pendingPaintRange.current = null;
     send('set_pixel_range', { start: 0, end: NUM_LEDS - 1, r: 0, g: 0, b: 0 }, { silent: true });
   }, [send]);
 
@@ -513,6 +560,8 @@ export default function App() {
   const currentColorHex = ledState.color
     ? rgbToHex(ledState.color.r, ledState.color.g, ledState.color.b)
     : '#ff0000';
+  const animationColor = ledState.animation_color || { r: 255, g: 0, b: 0 };
+  const animationColorHex = rgbToHex(animationColor.r, animationColor.g, animationColor.b);
 
   // Compute strip LED width to fit screen
   const stripPadding = 40; // account for parent padding
@@ -623,33 +672,102 @@ export default function App() {
 
         {/* Context-Sensitive Controls */}
         {ledState.mode === 'animation' ? (
-          /* Animation: PREV / effect name / NEXT */
-          <View style={styles.animControlRow}>
-            <TouchableOpacity
-              style={styles.animNavBtn}
-              onPress={() => send('previous')}
-              activeOpacity={0.6}
-            >
-              <Text style={styles.animNavIcon}>{'\u2190'}</Text>
-              <Text style={styles.animNavLabel}>PREV</Text>
-            </TouchableOpacity>
-            <View style={styles.animEffectBox}>
-              <Text style={styles.animEffectName} numberOfLines={2}>
-                {ledState.effect_name}
-              </Text>
-              <Text style={styles.animEffectIndex}>
-                {ledState.effect_index + 1} / {ledState.total_effects}
-              </Text>
+          <>
+            {/* Animation: PREV / effect name / NEXT */}
+            <View style={styles.animControlRow}>
+              <TouchableOpacity
+                style={styles.animNavBtn}
+                onPress={() => send('previous')}
+                activeOpacity={0.6}
+              >
+                <Text style={styles.animNavIcon}>{'\u2190'}</Text>
+                <Text style={styles.animNavLabel}>PREV</Text>
+              </TouchableOpacity>
+              <View style={styles.animEffectBox}>
+                <Text style={styles.animEffectName} numberOfLines={2}>
+                  {ledState.effect_name}
+                </Text>
+                <Text style={styles.animEffectIndex}>
+                  {ledState.effect_index + 1} / {ledState.total_effects}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.animNavBtn}
+                onPress={() => send('next')}
+                activeOpacity={0.6}
+              >
+                <Text style={styles.animNavIcon}>{'\u2192'}</Text>
+                <Text style={styles.animNavLabel}>NEXT</Text>
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity
-              style={styles.animNavBtn}
-              onPress={() => send('next')}
-              activeOpacity={0.6}
-            >
-              <Text style={styles.animNavIcon}>{'\u2192'}</Text>
-              <Text style={styles.animNavLabel}>NEXT</Text>
-            </TouchableOpacity>
-          </View>
+
+            {animationColorSupported && (
+              <View style={styles.animationToolSection}>
+                <Text style={styles.animationToolLabel}>Animation Color</Text>
+                <View
+                  style={[styles.wheelContainer, { width: wheelSize, height: wheelSize }]}
+                  onStartShouldSetResponderCapture={() => true}
+                  onMoveShouldSetResponderCapture={() => true}
+                  onStartShouldSetResponder={() => true}
+                  onMoveShouldSetResponder={() => true}
+                  onResponderTerminationRequest={() => false}
+                  onResponderGrant={handleWheelGrant}
+                  onResponderMove={handleWheelTouch}
+                  onResponderRelease={handleWheelRelease}
+                  onResponderTerminate={endInteractiveGesture}
+                >
+                  <View
+                    pointerEvents="none"
+                    style={[styles.wheelBg, { width: wheelSize, height: wheelSize, borderRadius: wheelSize / 2 }]}
+                  />
+                  {wheelDotViews}
+                  <View
+                    pointerEvents="none"
+                    style={[styles.wheelCenter, { left: wheelSize / 2 - 16, top: wheelSize / 2 - 16 }]}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={styles.wheelExpandBtn}
+                  onPress={() => setWheelExpanded(prev => !prev)}
+                  activeOpacity={0.6}
+                >
+                  <Text style={styles.wheelExpandBtnText}>
+                    {wheelExpanded ? 'Shrink' : 'Expand'}
+                  </Text>
+                </TouchableOpacity>
+                <View style={styles.paintColorRow}>
+                  <Text style={styles.paintColorLabel}>Current Color:</Text>
+                  <View style={[styles.paintColorSwatch, { backgroundColor: animationColorHex }]} />
+                </View>
+              </View>
+            )}
+
+            {ballCountSupported && (
+              <View style={styles.ballCountSection}>
+                <Text style={styles.animationToolLabel}>Bouncing Balls</Text>
+                <View style={styles.ballCountRow}>
+                  <TouchableOpacity
+                    style={styles.ballCountBtn}
+                    onPress={() => send('decrease_ball_count')}
+                    activeOpacity={0.6}
+                  >
+                    <Text style={styles.ballCountBtnText}>-</Text>
+                  </TouchableOpacity>
+                  <View style={styles.ballCountValueBox}>
+                    <Text style={styles.ballCountValue}>{ledState.ball_count || 1}</Text>
+                    <Text style={styles.ballCountCaption}>balls</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.ballCountBtn}
+                    onPress={() => send('increase_ball_count')}
+                    activeOpacity={0.6}
+                  >
+                    <Text style={styles.ballCountBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </>
         ) : (
           /* Static: Color Wheel */
           <View style={styles.colorSection}>
@@ -657,7 +775,11 @@ export default function App() {
             <View style={styles.paintToggleRow}>
               <TouchableOpacity
                 style={[styles.paintToggleBtn, !freePaintMode && styles.paintToggleBtnActive]}
-                onPress={() => setFreePaintMode(false)}
+                onPress={() => {
+                  pendingPaintRange.current = null;
+                  lastPaintIndex.current = null;
+                  setFreePaintMode(false);
+                }}
                 activeOpacity={0.6}
               >
                 <Text style={styles.paintToggleBtnText}>Solid Color</Text>
@@ -749,7 +871,9 @@ export default function App() {
                   onResponderMove={handleStripTouch}
                   onResponderRelease={handleStripRelease}
                   onResponderTerminate={() => {
+                    flushPendingPaint(true);
                     lastPaintIndex.current = null;
+                    pendingPaintRange.current = null;
                     endInteractiveGesture();
                   }}
                 >
@@ -1086,6 +1210,62 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 12,
     marginTop: 4,
+  },
+  animationToolSection: {
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  animationToolLabel: {
+    color: '#aaa',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 1,
+    marginBottom: 10,
+  },
+  ballCountSection: {
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  ballCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  ballCountBtn: {
+    width: 50,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
+    borderColor: '#444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ballCountBtnText: {
+    color: '#fff',
+    fontSize: 26,
+    fontWeight: '700',
+  },
+  ballCountValueBox: {
+    minWidth: 96,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#333',
+    alignItems: 'center',
+  },
+  ballCountValue: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  ballCountCaption: {
+    color: '#888',
+    fontSize: 11,
+    letterSpacing: 1,
+    marginTop: 2,
   },
 
   // Color wheel section

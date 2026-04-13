@@ -25,7 +25,7 @@ pacifica_palette_3 = [
 ]
 
 def millis():
-    return int(round(time.time() * 1000))
+    return int(time.monotonic() * 1000)
 
 def sin16(x):
     angle = x * (2 * math.pi) / 65536.0

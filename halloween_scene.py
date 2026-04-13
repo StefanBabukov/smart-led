@@ -1,7 +1,6 @@
-import time
 import random
 import math
-from led_operations import set_pixel, set_all
+from led_operations import fill_all, set_pixel
 
 # Global state for the Halloween scene
 halloween_scene_state = {
@@ -64,7 +63,7 @@ def halloween_scene_step(strip):
         # Start pumpkin roughly in the middle
         st['pumpkin_position'] = num_leds // 2
         # Clear strip initially
-        set_all(strip, 0, 0, 0)
+        fill_all(strip, 0, 0, 0)
 
     st['frame_count'] += 1
     st['background_offset'] += 1
