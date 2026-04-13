@@ -406,14 +406,46 @@ def initialize_bouncing_balls(strip, ball_count, colors):
     now = time.monotonic()
     st = bouncing_balls_state
     st["ball_count"] = ball_count
-    st["positions"] = [0.0] * ball_count
-    st["velocities"] = [0.0] * ball_count
-    st["launch_times"] = [now + (i * 0.16) for i in range(ball_count)]
-    st["colors"] = [colors[i % len(colors)] for i in range(ball_count)]
-    st["restitution"] = [0.62 - (0.03 * (i % 4)) for i in range(ball_count)]
+    st["positions"] = []
+    st["velocities"] = []
+    st["launch_times"] = []
+    st["colors"] = []
+    st["restitution"] = []
+    for i in range(ball_count):
+        add_bouncing_ball(st, colors[i % len(colors)], now + (i * 0.18))
     st["last_time"] = now
     st["settled_since"] = None
     st["init"] = True
+
+
+def add_bouncing_ball(st, color, launch_time):
+    ball_index = len(st["positions"])
+    st["positions"].append(0.0)
+    st["velocities"].append(0.0)
+    st["launch_times"].append(launch_time)
+    st["colors"].append(color)
+    restitution = 0.48 + (0.08 * (ball_index % 5)) + random.uniform(-0.02, 0.02)
+    st["restitution"].append(max(0.42, min(0.84, restitution)))
+
+
+def sync_bouncing_ball_count(ball_count, colors):
+    st = bouncing_balls_state
+    if ball_count == st["ball_count"]:
+        return
+
+    now = time.monotonic()
+    if ball_count > st["ball_count"]:
+        for i in range(st["ball_count"], ball_count):
+            add_bouncing_ball(st, colors[i % len(colors)], now + ((i - st["ball_count"]) * 0.16))
+    else:
+        st["positions"] = st["positions"][:ball_count]
+        st["velocities"] = st["velocities"][:ball_count]
+        st["launch_times"] = st["launch_times"][:ball_count]
+        st["colors"] = st["colors"][:ball_count]
+        st["restitution"] = st["restitution"][:ball_count]
+
+    st["ball_count"] = ball_count
+    st["settled_since"] = None
 
 
 def bouncing_colored_balls_step(strip, ball_count, colors, continuous):
@@ -421,8 +453,10 @@ def bouncing_colored_balls_step(strip, ball_count, colors, continuous):
     num_leds = strip.numPixels()
     floor_position = max(1.0, num_leds - 1.0)
 
-    if (not st["init"]) or st["ball_count"] != ball_count:
+    if not st["init"]:
         initialize_bouncing_balls(strip, ball_count, colors)
+    else:
+        sync_bouncing_ball_count(ball_count, colors)
 
     now = time.monotonic()
     dt = min(0.05, max(0.0, now - st["last_time"]))

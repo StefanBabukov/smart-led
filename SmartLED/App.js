@@ -109,6 +109,9 @@ export default function App() {
     supports_animation_color: false,
     supports_ball_count: false,
     ball_count: 3,
+    game_score: 0,
+    game_wave: 1,
+    game_over: false,
   });
 
   // Scan state
@@ -122,6 +125,7 @@ export default function App() {
   const [wheelExpanded, setWheelExpanded] = useState(false);
   const wheelSize = wheelExpanded ? WHEEL_SIZE_LARGE : WHEEL_SIZE_SMALL;
   const wheelRadius = wheelSize / 2;
+  const isGameMode = ledState.mode === 'game';
   const animationColorSupported = ledState.mode === 'animation' && ledState.supports_animation_color;
   const ballCountSupported = ledState.mode === 'animation' && ledState.supports_ball_count;
 
@@ -562,6 +566,23 @@ export default function App() {
     : '#ff0000';
   const animationColor = ledState.animation_color || { r: 255, g: 0, b: 0 };
   const animationColorHex = rgbToHex(animationColor.r, animationColor.g, animationColor.b);
+  const modeLabel = ledState.mode === 'animation'
+    ? 'Animation'
+    : ledState.mode === 'game'
+      ? 'Game'
+      : 'Static';
+  const detailLabel = isGameMode
+    ? 'Game'
+    : ledState.mode === 'animation'
+      ? 'Effect'
+      : 'Color';
+  const detailText = isGameMode
+    ? `${ledState.effect_name || 'Zombie Defense'} | Score ${ledState.game_score || 0} | Wave ${ledState.game_wave || 1}${ledState.game_over ? ' | Game Over' : ''}`
+    : ledState.mode === 'animation'
+      ? `${ledState.effect_name} (${ledState.effect_index + 1}/${ledState.total_effects})`
+      : ledState.color
+        ? `R:${ledState.color.r} G:${ledState.color.g} B:${ledState.color.b}`
+        : ledState.effect_name;
 
   // Compute strip LED width to fit screen
   const stripPadding = 40; // account for parent padding
@@ -616,24 +637,17 @@ export default function App() {
           <View style={styles.statusRow}>
             <Text style={styles.statusLabel}>Mode</Text>
             <Text style={styles.statusValue}>
-              {ledState.mode === 'animation' ? 'Animation' : 'Static'}
+              {modeLabel}
             </Text>
           </View>
           <View style={styles.statusRow}>
-            <Text style={styles.statusLabel}>
-              {ledState.mode === 'animation' ? 'Effect' : 'Color'}
-            </Text>
+            <Text style={styles.statusLabel}>{detailLabel}</Text>
             <View style={styles.statusValueRow}>
               {ledState.mode === 'static' && ledState.color && (
                 <View style={[styles.colorPreview, { backgroundColor: currentColorHex }]} />
               )}
               <Text style={styles.statusValue} numberOfLines={1}>
-                {ledState.mode === 'animation'
-                  ? `${ledState.effect_name} (${ledState.effect_index + 1}/${ledState.total_effects})`
-                  : ledState.color
-                    ? `R:${ledState.color.r} G:${ledState.color.g} B:${ledState.color.b}`
-                    : ledState.effect_name
-                }
+                {detailText}
               </Text>
             </View>
           </View>
@@ -653,6 +667,13 @@ export default function App() {
             activeOpacity={0.6}
           >
             <Text style={styles.modeBtnText}>ANIMATION</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.modeBtn, ledState.mode === 'game' && styles.modeBtnActive]}
+            onPress={() => send('mode_game')}
+            activeOpacity={0.6}
+          >
+            <Text style={styles.modeBtnText}>GAME</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.modeBtn, ledState.mode === 'static' && styles.modeBtnActive]}
@@ -768,6 +789,61 @@ export default function App() {
               </View>
             )}
           </>
+        ) : isGameMode ? (
+          <View style={styles.gameSection}>
+            <Text style={styles.gameTitle}>Zombie Defense</Text>
+            <Text style={styles.gameSubtitle}>
+              Hold the middle line by moving left and right, then shoot incoming zombies from either side.
+            </Text>
+            <View style={styles.gameMetaRow}>
+              <View style={styles.gameMetaCard}>
+                <Text style={styles.gameMetaLabel}>Score</Text>
+                <Text style={styles.gameMetaValue}>{ledState.game_score || 0}</Text>
+              </View>
+              <View style={styles.gameMetaCard}>
+                <Text style={styles.gameMetaLabel}>Wave</Text>
+                <Text style={styles.gameMetaValue}>{ledState.game_wave || 1}</Text>
+              </View>
+              <View style={styles.gameMetaCard}>
+                <Text style={styles.gameMetaLabel}>State</Text>
+                <Text style={styles.gameMetaValueSmall}>{ledState.game_over ? 'Game Over' : 'Alive'}</Text>
+              </View>
+            </View>
+            <View style={styles.gameControls}>
+              <View style={styles.gameButtonRow}>
+                <TouchableOpacity
+                  style={styles.gameBtn}
+                  onPress={() => send('shoot_left', {}, { silent: true })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.gameBtnText}>SHOOT LEFT</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.gameBtn}
+                  onPress={() => send('shoot_right', {}, { silent: true })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.gameBtnText}>SHOOT RIGHT</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.gameButtonRow}>
+                <TouchableOpacity
+                  style={[styles.gameBtn, styles.gameMoveBtn]}
+                  onPress={() => send('move_left', {}, { silent: true })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.gameBtnText}>MOVE LEFT</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.gameBtn, styles.gameMoveBtn]}
+                  onPress={() => send('move_right', {}, { silent: true })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.gameBtnText}>MOVE RIGHT</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
         ) : (
           /* Static: Color Wheel */
           <View style={styles.colorSection}>
@@ -1136,7 +1212,7 @@ const styles = StyleSheet.create({
   // Mode buttons
   modeRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
     marginBottom: 16,
   },
   modeBtn: {
@@ -1163,7 +1239,7 @@ const styles = StyleSheet.create({
   modeBtnText: {
     color: '#fff',
     fontWeight: 'bold',
-    fontSize: 13,
+    fontSize: 12,
     letterSpacing: 1,
   },
 
@@ -1266,6 +1342,87 @@ const styles = StyleSheet.create({
     fontSize: 11,
     letterSpacing: 1,
     marginTop: 2,
+  },
+  gameSection: {
+    marginVertical: 16,
+    alignItems: 'center',
+  },
+  gameTitle: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  gameSubtitle: {
+    color: '#999',
+    fontSize: 13,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 18,
+  },
+  gameMetaRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+    marginBottom: 18,
+  },
+  gameMetaCard: {
+    flex: 1,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#333',
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+  },
+  gameMetaLabel: {
+    color: '#888',
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  gameMetaValue: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  gameMetaValueSmall: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 8,
+  },
+  gameControls: {
+    width: '100%',
+    gap: 12,
+  },
+  gameButtonRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  gameBtn: {
+    flex: 1,
+    minHeight: 74,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
+    borderColor: '#444',
+    paddingHorizontal: 10,
+  },
+  gameMoveBtn: {
+    backgroundColor: '#1f3045',
+    borderColor: '#3f6ea8',
+  },
+  gameBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textAlign: 'center',
   },
 
   // Color wheel section

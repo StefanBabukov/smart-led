@@ -7,6 +7,7 @@ from rpi_ws281x import PixelStrip
 
 from animations import *
 from fire import fire_step
+from game_mode import ZombieGameMode
 from halloween_scene import halloween_scene_step, reset_halloween_scene_state
 from led_operations import fill_all, get_pixel, set_pixel
 from pacifica import pacifica_step
@@ -34,6 +35,7 @@ BALL_COUNT_MAX = 12
 
 effect_stop_event = Event()
 strip_lock = Lock()
+server_loop = None
 
 selected_effect = -1
 current_mode = "animation"
@@ -47,6 +49,7 @@ strip.begin()
 
 # Initialize static mode handler
 static_mode = StaticMode(strip)
+zombie_game = ZombieGameMode(LED_COUNT)
 
 # Connected WebSocket clients
 connected_clients = set()
@@ -83,6 +86,10 @@ def bouncing_balls_current_step(active_strip):
 
 def meteor_current_step(active_strip):
     meteor_rain_step(active_strip, 255, 255, 255, 8, 60, False, 30)
+
+
+def game_current_step(active_strip):
+    zombie_game.step(active_strip)
 
 
 EFFECT_DEFINITIONS = [
@@ -222,11 +229,15 @@ def reset_states():
 
 def run_animation(effect_function, *args, **kwargs):
     frame_time = 0.02  # ~50 FPS
+    last_state_push = 0.0
     while not effect_stop_event.is_set():
         start = time.monotonic()
         with strip_lock:
             effect_function(strip, *args, **kwargs)
             strip.show()
+        if current_mode == "game" and server_loop and connected_clients and (start - last_state_push) >= 0.25:
+            asyncio.run_coroutine_threadsafe(broadcast_state(), server_loop)
+            last_state_push = start
         elapsed = time.monotonic() - start
         if elapsed < frame_time:
             time.sleep(frame_time - elapsed)
@@ -257,6 +268,11 @@ def start_effect(effect_function, *args, **kwargs):
 def run_effect(idx):
     if 0 <= idx < len(EFFECT_DEFINITIONS):
         EFFECT_DEFINITIONS[idx]["runner"]()
+
+
+def start_game_mode():
+    zombie_game.reset()
+    start_effect(game_current_step)
 
 
 def next_effect():
@@ -305,6 +321,12 @@ mode_commands = {
         "up": lambda: change_brightness(up=True),
         "down": lambda: change_brightness(up=False),
     },
+    "game": {
+        "next": lambda: None,
+        "previous": lambda: None,
+        "up": lambda: change_brightness(up=True),
+        "down": lambda: change_brightness(up=False),
+    },
 }
 
 
@@ -321,6 +343,9 @@ def get_state_dict():
         "supports_ball_count": False,
         "animation_color": None,
         "ball_count": animation_config["bouncing_balls"]["count"],
+        "game_score": 0,
+        "game_wave": 1,
+        "game_over": False,
     }
 
     if current_mode == "animation":
@@ -340,10 +365,16 @@ def get_state_dict():
             state["effect_key"] = None
             state["supports_animation_color"] = False
             state["supports_ball_count"] = False
-    else:
+    elif current_mode == "static":
         r, g, b = static_mode.get_rgb()
         state["effect_name"] = f"Static (R{r} G{g} B{b})"
         state["color"] = {"r": r, "g": g, "b": b}
+    else:
+        snapshot = zombie_game.snapshot()
+        state["effect_name"] = "Zombie Defense"
+        state["game_score"] = snapshot["score"]
+        state["game_wave"] = snapshot["wave"]
+        state["game_over"] = snapshot["game_over"]
 
     return state
 
@@ -373,7 +404,6 @@ def adjust_ball_count(delta):
         BALL_COUNT_MIN,
         min(BALL_COUNT_MAX, current_count + delta),
     )
-    bouncing_balls_state["init"] = False
 
 
 async def handle_command(action, data):
@@ -391,6 +421,14 @@ async def handle_command(action, data):
     elif action == "mode_static":
         stop_animations()
         current_mode = "static"
+    elif action == "mode_game":
+        current_mode = "game"
+        if animations_enabled:
+            start_game_mode()
+        else:
+            with strip_lock:
+                fill_all(strip, 0, 0, 0)
+                strip.show()
     elif action in ("next", "previous", "up", "down"):
         mode_commands[current_mode][action]()
     elif action == "toggle":
@@ -400,14 +438,17 @@ async def handle_command(action, data):
         else:
             if current_mode == "animation":
                 run_effect(selected_effect)
+            elif current_mode == "game":
+                start_game_mode()
             else:
                 with strip_lock:
                     static_mode.show_color()
+                    strip.show()
     elif action == "set_color":
         r = max(0, min(255, int(data.get("r", 255))))
         g = max(0, min(255, int(data.get("g", 255))))
         b = max(0, min(255, int(data.get("b", 255))))
-        if current_mode == "animation":
+        if current_mode in ("animation", "game"):
             stop_animations()
         current_mode = "static"
         animations_enabled = True
@@ -422,6 +463,18 @@ async def handle_command(action, data):
         adjust_ball_count(1)
     elif action == "decrease_ball_count":
         adjust_ball_count(-1)
+    elif action == "move_left":
+        if current_mode == "game":
+            zombie_game.move_left()
+    elif action == "move_right":
+        if current_mode == "game":
+            zombie_game.move_right()
+    elif action == "shoot_left":
+        if current_mode == "game":
+            zombie_game.shoot_left()
+    elif action == "shoot_right":
+        if current_mode == "game":
+            zombie_game.shoot_right()
     elif action == "set_brightness":
         value = max(0, min(255, int(data.get("value", current_brightness))))
         current_brightness = value
@@ -434,7 +487,7 @@ async def handle_command(action, data):
         r = max(0, min(255, int(data.get("r", 255))))
         g = max(0, min(255, int(data.get("g", 255))))
         b = max(0, min(255, int(data.get("b", 255))))
-        if current_mode == "animation":
+        if current_mode in ("animation", "game"):
             stop_animations()
         current_mode = "static"
         animations_enabled = True
@@ -479,7 +532,8 @@ async def handler(websocket):
 
 
 async def main():
-    global selected_effect
+    global selected_effect, server_loop
+    server_loop = asyncio.get_running_loop()
     selected_effect = 0
     run_effect(selected_effect)
 
