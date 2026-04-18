@@ -108,10 +108,64 @@ Find your build machine IP with: `hostname -I`
    - **Color wheel** = tap/drag to pick a color (static mode). Tap Expand for a larger wheel.
    - **Solid Color / Free Paint** = in static mode, toggle between setting all LEDs to one color or painting individual LEDs
    - **Free Paint** = select a color from the wheel, then drag along the LED strip to paint. Tap Reset Strip to clear.
-   - **LEFT / RIGHT arrows** = previous / next animation
+   - **Animation list** = tap any entry to switch straight to that animation
+   - **AI Create** (animation mode) = type a prompt to generate a new animation with AI (see below)
 4. Tap **SHOW LOGS** at the bottom for debug info if something isn't working
 
 The IP is saved automatically - you only enter it once.
+
+## AI Animation Generator
+
+Generate custom LED animations from natural language prompts like "northern lights" or "purple blue disco flashing wavy lights". The AI reads the existing animation codebase for reference and generates new Python animation code that runs directly on the strip.
+
+### Requirements
+
+- A PC with an NVIDIA GPU (12GB+ VRAM recommended) on the same network as the Pi
+- [Ollama](https://ollama.com) installed on that PC
+
+### Setup (on your PC)
+
+1. Install Ollama:
+   ```bash
+   curl -fsSL https://ollama.com/install.sh | sh
+   ```
+
+2. Pull the coding model:
+   ```bash
+   ollama pull qwen2.5-coder:14b
+   ```
+
+3. Start Ollama listening on all interfaces (so the Pi can reach it):
+   ```bash
+   OLLAMA_HOST=0.0.0.0 ollama serve
+   ```
+
+The Pi will automatically discover Ollama on the network — no manual IP configuration needed. If auto-discovery doesn't work, you can set the `OLLAMA_HOST` environment variable on the Pi:
+```bash
+export OLLAMA_HOST=http://<your-pc-ip>:11434
+```
+
+### Using AI Create
+
+1. Open the app and connect to the Pi
+2. Switch to **Animation** mode
+3. Scroll down to the **AI Create** section
+4. Type a description of the animation you want (e.g., "ocean waves with green and blue", "fire with purple flames", "twinkling stars with shooting stars")
+5. Tap **Generate** — the Pi sends your prompt to Ollama on your PC
+6. The generated animation previews on the LED strip automatically
+7. Tap **Save** to keep it (it appears in the animation list with an "AI" badge), or **Discard** to throw it away
+8. Tap **Retry** to regenerate with the same prompt
+9. To delete a saved AI animation, tap the **X** button next to it in the animation list
+
+Saved AI animations persist across server restarts.
+
+### Notes
+
+- Generation takes ~15-30 seconds depending on your GPU and model size
+- Your PC must be on and running `ollama serve` when generating — saved animations play without it
+- The AI uses your existing animations (fire, pacifica, bouncing balls, etc.) as reference to produce higher quality results
+- Generated code runs in a security sandbox — only LED control functions and basic math are available
+- You can use a different Ollama model by setting `OLLAMA_MODEL` on the Pi (default: `qwen2.5-coder:14b`)
 
 ## What setup.sh Does
 
@@ -153,6 +207,8 @@ sudo systemctl stop smart-led
 | File | Purpose |
 |------|---------|
 | `server.py` | WebSocket server - controls LEDs, serves phone app |
+| `ai_animations.py` | AI animation generator (Ollama client, sandbox, storage) |
+| `ai_animations/` | Saved AI-generated animations (created automatically) |
 | `setup.sh` | One-time Pi setup (deps, SD protection, systemd) |
 | `main.py` | Original IR remote version (kept as fallback) |
 | `animations.py` | Animation effects library |

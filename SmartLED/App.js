@@ -111,6 +111,7 @@ export default function App() {
     brightness: 255,
     enabled: true,
     total_effects: 20,
+    available_effects: [],
     color: null,
     animation_color: null,
     supports_animation_color: false,
@@ -162,6 +163,14 @@ export default function App() {
   const lastWheelSend = useRef(0);
   const lastWheelColor = useRef('');
   const gameHoldTimer = useRef(null);
+
+  // AI animation state
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiPreviewing, setAiPreviewing] = useState(false);
+  const [aiPreviewName, setAiPreviewName] = useState('');
+  const [aiError, setAiError] = useState(null);
+  const [aiSaveName, setAiSaveName] = useState('');
 
   const wheelSegments = useMemo(() => generateWheelSegments(wheelSize), [wheelSize]);
   const wheelDotViews = useMemo(() => (
@@ -244,6 +253,10 @@ export default function App() {
         const data = JSON.parse(e.data);
         if (data.type === 'state') {
           setLedState(data);
+          // Sync AI state from server broadcasts
+          if (data.ai_generating !== undefined) setAiGenerating(data.ai_generating);
+          if (data.ai_previewing !== undefined) setAiPreviewing(data.ai_previewing);
+          if (data.ai_preview_name !== undefined) setAiPreviewName(data.ai_preview_name || '');
           // Only sync brightness from server when not dragging
           if (!isDraggingBrightness.current) {
             setLocalBrightness(data.brightness);
@@ -251,6 +264,25 @@ export default function App() {
           }
         } else if (data.type === 'strip_colors') {
           setLedColors(data.colors.map(c => ({ r: c[0], g: c[1], b: c[2] })));
+        } else if (data.type === 'ai_result') {
+          if (data.status === 'previewing') {
+            setAiGenerating(false);
+            setAiPreviewing(true);
+            setAiPreviewName(data.name || '');
+            setAiSaveName(data.name || '');
+            setAiError(null);
+          } else if (data.status === 'error' || data.status === 'runtime_error') {
+            setAiGenerating(false);
+            setAiPreviewing(false);
+            setAiError(data.error || 'Unknown error');
+          }
+        } else if (data.type === 'ai_saved') {
+          setAiPreviewing(false);
+          setAiPrompt('');
+          setAiSaveName('');
+          setAiError(null);
+        } else if (data.type === 'ai_deleted') {
+          // state broadcast handles UI update
         }
       } catch (err) {
         addLog(`Parse error: ${err.message}`, 'error');
@@ -618,6 +650,7 @@ export default function App() {
     : '#ff0000';
   const animationColor = ledState.animation_color || { r: 255, g: 0, b: 0 };
   const animationColorHex = rgbToHex(animationColor.r, animationColor.g, animationColor.b);
+  const availableEffects = Array.isArray(ledState.available_effects) ? ledState.available_effects : [];
   const modeLabel = ledState.mode === 'animation'
     ? 'Animation'
     : ledState.mode === 'game'
@@ -746,32 +779,63 @@ export default function App() {
         {/* Context-Sensitive Controls */}
         {ledState.mode === 'animation' ? (
           <>
-            {/* Animation: PREV / effect name / NEXT */}
-            <View style={styles.animControlRow}>
-              <TouchableOpacity
-                style={styles.animNavBtn}
-                onPress={() => send('previous')}
-                activeOpacity={0.6}
-              >
-                <Text style={styles.animNavIcon}>{'\u2190'}</Text>
-                <Text style={styles.animNavLabel}>PREV</Text>
-              </TouchableOpacity>
-              <View style={styles.animEffectBox}>
-                <Text style={styles.animEffectName} numberOfLines={2}>
-                  {ledState.effect_name}
-                </Text>
-                <Text style={styles.animEffectIndex}>
+            <View style={styles.animListSection}>
+              <View style={styles.animListHeader}>
+                <Text style={styles.animListTitle}>Animations</Text>
+                <Text style={styles.animListCount}>
                   {ledState.effect_index + 1} / {ledState.total_effects}
                 </Text>
               </View>
-              <TouchableOpacity
-                style={styles.animNavBtn}
-                onPress={() => send('next')}
-                activeOpacity={0.6}
-              >
-                <Text style={styles.animNavIcon}>{'\u2192'}</Text>
-                <Text style={styles.animNavLabel}>NEXT</Text>
-              </TouchableOpacity>
+              <View style={styles.animListBox}>
+                {availableEffects.length > 0 ? (
+                  availableEffects.map((effect) => {
+                    const selected = effect.index === ledState.effect_index;
+                    return (
+                      <TouchableOpacity
+                        key={effect.key || String(effect.index)}
+                        style={[styles.animListItem, selected && styles.animListItemActive]}
+                        onPress={() => send('set_effect', { index: effect.index })}
+                        activeOpacity={0.6}
+                      >
+                        <View style={[styles.animListBadge, selected && styles.animListBadgeActive]}>
+                          <Text style={[styles.animListBadgeText, selected && styles.animListBadgeTextActive]}>
+                            {effect.index + 1}
+                          </Text>
+                        </View>
+                        <Text
+                          style={[styles.animListItemText, selected && styles.animListItemTextActive]}
+                          numberOfLines={2}
+                        >
+                          {effect.name}
+                        </Text>
+                        {effect.is_ai_generated && (
+                          <View style={styles.aiEffectRow}>
+                            <View style={styles.aiBadge}>
+                              <Text style={styles.aiBadgeText}>AI</Text>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.aiDeleteBtn}
+                              onPress={(e) => {
+                                e.stopPropagation && e.stopPropagation();
+                                send('ai_delete', { ai_id: effect.ai_id });
+                              }}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                              <Text style={styles.aiDeleteBtnText}>X</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })
+                ) : (
+                  <View style={styles.animListEmpty}>
+                    <Text style={styles.animListEmptyText}>
+                      {ledState.effect_name || 'Waiting for animation list...'}
+                    </Text>
+                  </View>
+                )}
+              </View>
             </View>
 
             {animationColorSupported && (
@@ -840,6 +904,109 @@ export default function App() {
                 </View>
               </View>
             )}
+
+            {/* AI Create Section */}
+            <View style={styles.aiSection}>
+              <Text style={styles.aiSectionTitle}>AI Create</Text>
+
+              {aiPreviewing ? (
+                <View style={styles.aiPreviewBox}>
+                  <Text style={styles.aiPreviewLabel}>Previewing: {aiPreviewName}</Text>
+                  <TextInput
+                    style={styles.aiNameInput}
+                    value={aiSaveName}
+                    onChangeText={setAiSaveName}
+                    placeholder="Animation name"
+                    placeholderTextColor="#666"
+                  />
+                  <View style={styles.aiPreviewBtnRow}>
+                    <TouchableOpacity
+                      style={styles.aiSaveBtn}
+                      onPress={() => send('ai_save', { name: aiSaveName || aiPreviewName })}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={styles.aiSaveBtnText}>Save</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.aiDiscardBtn}
+                      onPress={() => {
+                        send('ai_discard');
+                        setAiPreviewing(false);
+                        setAiPreviewName('');
+                        setAiSaveName('');
+                      }}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={styles.aiDiscardBtnText}>Discard</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.aiRegenerateBtn}
+                      onPress={() => {
+                        setAiPreviewing(false);
+                        setAiGenerating(true);
+                        send('ai_generate', { prompt: aiPrompt });
+                      }}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={styles.aiRegenerateBtnText}>Retry</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : (
+                <>
+                  <TextInput
+                    style={styles.aiPromptInput}
+                    value={aiPrompt}
+                    onChangeText={setAiPrompt}
+                    placeholder="Describe an animation... e.g. northern lights"
+                    placeholderTextColor="#666"
+                    multiline
+                    maxLength={500}
+                    editable={!aiGenerating}
+                  />
+                  {aiGenerating ? (
+                    <View style={styles.aiGeneratingRow}>
+                      <ActivityIndicator color="#39f" size="small" />
+                      <Text style={styles.aiGeneratingText}>Generating animation...</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.aiGenerateBtn, !aiPrompt.trim() && styles.aiGenerateBtnDisabled]}
+                      onPress={() => {
+                        if (aiPrompt.trim()) {
+                          setAiGenerating(true);
+                          setAiError(null);
+                          send('ai_generate', { prompt: aiPrompt.trim() });
+                        }
+                      }}
+                      activeOpacity={0.6}
+                      disabled={!aiPrompt.trim()}
+                    >
+                      <Text style={styles.aiGenerateBtnText}>Generate</Text>
+                    </TouchableOpacity>
+                  )}
+                </>
+              )}
+
+              {aiError && (
+                <View style={styles.aiErrorBox}>
+                  <Text style={styles.aiErrorText}>{aiError}</Text>
+                  <TouchableOpacity
+                    style={styles.aiTryAgainBtn}
+                    onPress={() => {
+                      setAiError(null);
+                      if (aiPrompt.trim()) {
+                        setAiGenerating(true);
+                        send('ai_generate', { prompt: aiPrompt.trim() });
+                      }
+                    }}
+                    activeOpacity={0.6}
+                  >
+                    <Text style={styles.aiTryAgainBtnText}>Try Again</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
           </>
         ) : isGameMode ? (
           <View style={styles.gameSection}>
@@ -1298,48 +1465,87 @@ const styles = StyleSheet.create({
   },
 
   // Animation controls
-  animControlRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  animListSection: {
     marginVertical: 16,
-    gap: 12,
   },
-  animNavBtn: {
-    width: 80,
-    height: 70,
-    backgroundColor: '#2a2a2a',
-    borderRadius: 14,
-    justifyContent: 'center',
+  animListHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#444',
+    marginBottom: 10,
   },
-  animNavIcon: {
-    color: '#fff',
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  animNavLabel: {
-    color: '#aaa',
-    fontSize: 10,
-    marginTop: 2,
-    letterSpacing: 1,
-  },
-  animEffectBox: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  animEffectName: {
+  animListTitle: {
     color: '#fff',
     fontSize: 18,
     fontWeight: '700',
-    textAlign: 'center',
   },
-  animEffectIndex: {
+  animListCount: {
     color: '#888',
     fontSize: 12,
-    marginTop: 4,
+    fontWeight: '600',
+  },
+  animListBox: {
+    backgroundColor: '#181818',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#2e2e2e',
+    padding: 10,
+  },
+  animListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#232323',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#363636',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    marginBottom: 8,
+  },
+  animListItemActive: {
+    backgroundColor: '#19324d',
+    borderColor: '#39f',
+  },
+  animListBadge: {
+    minWidth: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#111',
+    borderWidth: 1,
+    borderColor: '#444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  animListBadgeActive: {
+    backgroundColor: '#39f',
+    borderColor: '#6bb8ff',
+  },
+  animListBadgeText: {
+    color: '#bbb',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  animListBadgeTextActive: {
+    color: '#08131f',
+  },
+  animListItemText: {
+    flex: 1,
+    color: '#eee',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  animListItemTextActive: {
+    color: '#fff',
+  },
+  animListEmpty: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  animListEmptyText: {
+    color: '#888',
+    fontSize: 13,
   },
   animationToolSection: {
     alignItems: 'center',
@@ -1828,5 +2034,177 @@ const styles = StyleSheet.create({
     color: '#aaa',
     fontSize: 14,
     fontWeight: '600',
+  },
+
+  // --- AI Create ---
+  aiSection: {
+    marginTop: 18,
+    padding: 14,
+    backgroundColor: '#1a1a2e',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2a2a4a',
+  },
+  aiSectionTitle: {
+    color: '#8899ff',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 10,
+    letterSpacing: 0.5,
+  },
+  aiPromptInput: {
+    backgroundColor: '#111',
+    color: '#fff',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#333',
+    minHeight: 60,
+    textAlignVertical: 'top',
+    marginBottom: 10,
+  },
+  aiGenerateBtn: {
+    backgroundColor: '#2255cc',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  aiGenerateBtnDisabled: {
+    backgroundColor: '#333',
+  },
+  aiGenerateBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  aiGeneratingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    gap: 10,
+  },
+  aiGeneratingText: {
+    color: '#8899ff',
+    fontSize: 14,
+  },
+  aiPreviewBox: {
+    backgroundColor: '#111',
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#2255cc',
+  },
+  aiPreviewLabel: {
+    color: '#8899ff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  aiNameInput: {
+    backgroundColor: '#1a1a1a',
+    color: '#fff',
+    borderRadius: 6,
+    padding: 10,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#333',
+    marginBottom: 10,
+  },
+  aiPreviewBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  aiSaveBtn: {
+    flex: 1,
+    backgroundColor: '#1a7a3a',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  aiSaveBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  aiDiscardBtn: {
+    flex: 1,
+    backgroundColor: '#333',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  aiDiscardBtnText: {
+    color: '#ccc',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  aiRegenerateBtn: {
+    flex: 1,
+    backgroundColor: '#2255cc',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  aiRegenerateBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  aiErrorBox: {
+    marginTop: 10,
+    backgroundColor: '#2a1515',
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#662222',
+  },
+  aiErrorText: {
+    color: '#ff6666',
+    fontSize: 13,
+    marginBottom: 8,
+  },
+  aiTryAgainBtn: {
+    backgroundColor: '#553333',
+    borderRadius: 6,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  aiTryAgainBtnText: {
+    color: '#ff9999',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  aiEffectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 'auto',
+    gap: 6,
+  },
+  aiBadge: {
+    backgroundColor: '#2255cc',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  aiBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  aiDeleteBtn: {
+    backgroundColor: '#662222',
+    borderRadius: 4,
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aiDeleteBtnText: {
+    color: '#ff6666',
+    fontSize: 12,
+    fontWeight: '800',
   },
 });

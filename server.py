@@ -5,6 +5,17 @@ from threading import Event, Lock, Thread
 
 from rpi_ws281x import PixelStrip
 
+from ai_animations import (
+    call_ollama,
+    compile_ai_animation,
+    delete_ai_animation,
+    extract_code,
+    load_all_ai_animations,
+    make_safe_step,
+    prompt_to_name,
+    save_ai_animation,
+    validate_code,
+)
 from animations import *
 from fire import fire_step
 from game_mode import ZombieGameMode
@@ -61,6 +72,12 @@ animation_config = {
     "theater_chase": {"color": (255, 0, 0)},
     "bouncing_balls": {"count": 3},
 }
+
+# AI-generated animation state
+ai_generating = False
+ai_preview_state = None  # {"name", "prompt", "code", "step_fn"} or None
+ai_previous_effect = None  # effect index to restore on discard
+AI_EFFECT_DEFINITIONS = []  # loaded from disk at startup
 
 
 def running_lights_current_step(active_strip):
@@ -194,10 +211,56 @@ EFFECT_DEFINITIONS = [
     },
 ]
 
+EFFECT_CATALOG = []
+
+
+def all_effects():
+    return EFFECT_DEFINITIONS + AI_EFFECT_DEFINITIONS
+
+
+def rebuild_effect_catalog():
+    global EFFECT_CATALOG
+    effects = all_effects()
+    EFFECT_CATALOG = [
+        {
+            "index": index,
+            "key": effect["key"],
+            "name": effect["name"],
+            "supports_color": bool(effect.get("supports_color")),
+            "supports_ball_count": bool(effect.get("supports_ball_count")),
+            "is_ai_generated": bool(effect.get("is_ai_generated")),
+            "ai_id": effect.get("ai_id"),
+        }
+        for index, effect in enumerate(effects)
+    ]
+
+
+def rebuild_ai_effects():
+    """Load saved AI animations from disk and rebuild the combined catalog."""
+    global AI_EFFECT_DEFINITIONS
+    saved = load_all_ai_animations()
+    AI_EFFECT_DEFINITIONS = []
+    for anim in saved:
+        try:
+            step_fn, _state = compile_ai_animation(anim["code"])
+        except Exception:
+            continue
+        AI_EFFECT_DEFINITIONS.append({
+            "key": f"ai_{anim['id']}",
+            "name": f"AI: {anim['name']}",
+            "runner": lambda fn=step_fn: start_effect(fn),
+            "supports_color": False,
+            "supports_ball_count": False,
+            "is_ai_generated": True,
+            "ai_id": anim["id"],
+        })
+    rebuild_effect_catalog()
+
 
 def current_effect_definition():
-    if 0 <= selected_effect < len(EFFECT_DEFINITIONS):
-        return EFFECT_DEFINITIONS[selected_effect]
+    effects = all_effects()
+    if 0 <= selected_effect < len(effects):
+        return effects[selected_effect]
     return None
 
 
@@ -272,8 +335,20 @@ def start_effect(effect_function, *args, **kwargs):
 
 
 def run_effect(idx):
-    if 0 <= idx < len(EFFECT_DEFINITIONS):
-        EFFECT_DEFINITIONS[idx]["runner"]()
+    effects = all_effects()
+    if 0 <= idx < len(effects):
+        effects[idx]["runner"]()
+
+
+def set_effect_by_index(idx):
+    global selected_effect
+    effects = all_effects()
+    if 0 <= idx < len(effects):
+        selected_effect = idx
+        if current_mode == "animation" and animations_enabled:
+            run_effect(selected_effect)
+        return True
+    return False
 
 
 def start_game_mode():
@@ -283,13 +358,13 @@ def start_game_mode():
 
 def next_effect():
     global selected_effect
-    selected_effect = (selected_effect + 1) % len(EFFECT_DEFINITIONS)
+    selected_effect = (selected_effect + 1) % len(all_effects())
     run_effect(selected_effect)
 
 
 def previous_effect():
     global selected_effect
-    selected_effect = (selected_effect - 1) % len(EFFECT_DEFINITIONS)
+    selected_effect = (selected_effect - 1) % len(all_effects())
     run_effect(selected_effect)
 
 
@@ -343,7 +418,11 @@ def get_state_dict():
         "effect_index": selected_effect,
         "brightness": current_brightness,
         "enabled": animations_enabled,
-        "total_effects": len(EFFECT_DEFINITIONS),
+        "total_effects": len(all_effects()),
+        "available_effects": EFFECT_CATALOG,
+        "ai_generating": ai_generating,
+        "ai_previewing": ai_preview_state is not None,
+        "ai_preview_name": ai_preview_state["name"] if ai_preview_state else None,
         "effect_key": None,
         "supports_animation_color": False,
         "supports_ball_count": False,
@@ -412,8 +491,94 @@ def adjust_ball_count(delta):
     )
 
 
-async def handle_command(action, data):
+async def _ai_generate_task(prompt, websocket):
+    """Run AI generation in a background thread and handle the result."""
+    global ai_generating, ai_preview_state
+
+    loop = asyncio.get_event_loop()
+    try:
+        response_text = await loop.run_in_executor(None, call_ollama, prompt)
+        code = extract_code(response_text)
+        if not code:
+            raise ValueError("No valid code in AI response. Try rephrasing your prompt.")
+
+        ok, err = validate_code(code)
+        if not ok:
+            raise ValueError(f"Generated code is unsafe: {err}")
+
+        step_fn, _state = compile_ai_animation(code)
+
+        # Wrap with runtime safety
+        runtime_error_sent = [False]
+
+        def on_runtime_error(error_msg):
+            if not runtime_error_sent[0]:
+                runtime_error_sent[0] = True
+                asyncio.run_coroutine_threadsafe(
+                    _send_ai_error(websocket, f"Animation crashed: {error_msg}"),
+                    loop,
+                )
+
+        safe_fn = make_safe_step(step_fn, on_runtime_error)
+        name = prompt_to_name(prompt)
+
+        ai_preview_state = {
+            "name": name,
+            "prompt": prompt,
+            "code": code,
+            "step_fn": safe_fn,
+        }
+        ai_generating = False
+
+        # Start previewing the animation
+        start_effect(safe_fn)
+
+        msg = json.dumps({
+            "type": "ai_result",
+            "status": "previewing",
+            "name": name,
+            "prompt": prompt,
+        })
+        try:
+            await websocket.send(msg)
+        except Exception:
+            pass
+        await broadcast_state()
+
+    except Exception as exc:
+        ai_generating = False
+        ai_preview_state = None
+        msg = json.dumps({
+            "type": "ai_result",
+            "status": "error",
+            "error": str(exc),
+        })
+        try:
+            await websocket.send(msg)
+        except Exception:
+            pass
+        await broadcast_state()
+
+
+async def _send_ai_error(websocket, error_msg):
+    """Send a runtime error message to the client."""
+    global ai_preview_state
+    ai_preview_state = None
+    msg = json.dumps({
+        "type": "ai_result",
+        "status": "runtime_error",
+        "error": error_msg,
+    })
+    try:
+        await websocket.send(msg)
+    except Exception:
+        pass
+    await broadcast_state()
+
+
+async def handle_command(action, data, websocket=None):
     global current_mode, animations_enabled, selected_effect, current_brightness
+    global ai_generating, ai_preview_state, ai_previous_effect
     should_broadcast = True
 
     if action == "mode_animation":
@@ -465,6 +630,12 @@ async def handle_command(action, data):
         g = max(0, min(255, int(data.get("g", 255))))
         b = max(0, min(255, int(data.get("b", 255))))
         update_animation_color(r, g, b)
+    elif action == "set_effect":
+        try:
+            index = int(data.get("index", selected_effect))
+        except (TypeError, ValueError):
+            index = selected_effect
+        set_effect_by_index(index)
     elif action == "increase_ball_count":
         adjust_ball_count(1)
     elif action == "decrease_ball_count":
@@ -502,6 +673,59 @@ async def handle_command(action, data):
                 set_pixel(strip, i, r, g, b)
             strip.show()
         should_broadcast = False
+    elif action == "ai_generate":
+        prompt = str(data.get("prompt", "")).strip()
+        if not prompt:
+            should_broadcast = False
+        elif len(prompt) > 500:
+            should_broadcast = False
+        else:
+            ai_generating = True
+            ai_previous_effect = selected_effect
+            await broadcast_state()
+            should_broadcast = False
+            asyncio.get_event_loop().create_task(
+                _ai_generate_task(prompt, websocket)
+            )
+    elif action == "ai_save":
+        if ai_preview_state:
+            name = str(data.get("name", ai_preview_state["name"])).strip()
+            if not name:
+                name = ai_preview_state["name"]
+            save_ai_animation(name, ai_preview_state["prompt"], ai_preview_state["code"])
+            ai_preview_state = None
+            rebuild_ai_effects()
+            # Select the newly saved animation (last in AI list)
+            selected_effect = len(all_effects()) - 1
+            if current_mode == "animation" and animations_enabled:
+                run_effect(selected_effect)
+        else:
+            should_broadcast = False
+    elif action == "ai_discard":
+        if ai_preview_state:
+            ai_preview_state = None
+            if ai_previous_effect is not None:
+                selected_effect = ai_previous_effect
+                ai_previous_effect = None
+                if current_mode == "animation" and animations_enabled:
+                    run_effect(selected_effect)
+        else:
+            should_broadcast = False
+    elif action == "ai_delete":
+        ai_id = str(data.get("ai_id", ""))
+        if ai_id and delete_ai_animation(ai_id):
+            # If deleted effect was playing, switch to first built-in
+            effect = current_effect_definition()
+            if effect and effect.get("ai_id") == ai_id:
+                selected_effect = 0
+                if current_mode == "animation" and animations_enabled:
+                    run_effect(selected_effect)
+            rebuild_ai_effects()
+            # Clamp selected_effect if it's now out of range
+            if selected_effect >= len(all_effects()):
+                selected_effect = max(0, len(all_effects()) - 1)
+        else:
+            should_broadcast = False
     elif action == "get_strip_colors":
         should_broadcast = False
     elif action == "get_state":
@@ -523,7 +747,7 @@ async def handler(websocket):
                 continue
 
             async with command_lock:
-                await handle_command(action, data)
+                await handle_command(action, data, websocket)
                 if action == "get_strip_colors":
                     with strip_lock:
                         colors = [list(get_pixel(strip, i)) for i in range(LED_COUNT)]
@@ -540,6 +764,7 @@ async def handler(websocket):
 async def main():
     global selected_effect, server_loop
     server_loop = asyncio.get_running_loop()
+    rebuild_ai_effects()
     selected_effect = 0
     run_effect(selected_effect)
 
