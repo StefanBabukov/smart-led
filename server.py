@@ -24,7 +24,7 @@ except ImportError:
 
 # LED strip configuration
 LED_COUNT = 300
-LED_GPIO_PIN = 18
+LED_GPIO_PIN = 18  # PWM pin; setup.sh disables onboard audio to avoid animation flicker.
 LED_FREQ_HZ = 800000
 LED_DMA = 10
 LED_BRIGHTNESS = 255

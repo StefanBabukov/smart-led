@@ -9,7 +9,7 @@ Control WS2812B LED strip (300 LEDs) on a Raspberry Pi via a smartphone app over
    ```
    sudo bash setup.sh
    ```
-3. Reboot to activate SD card protections:
+3. Reboot to activate SD card protections and the PWM/audio flicker fix:
    ```
    sudo reboot
    ```
@@ -145,6 +145,7 @@ sudo systemctl stop smart-led
 
 - **App can't connect:** Check the Pi IP is correct, phone and Pi are on the same WiFi, and port 8765 isn't blocked. Use SHOW LOGS in the app for details.
 - **LEDs not responding:** SSH into the Pi and run `sudo systemctl status smart-led` to check if the service is running.
+- **LEDs flicker bright colors only during animations:** This project drives the strip from GPIO 18, which uses PWM. On Raspberry Pi, onboard audio can conflict with PWM and cause random render glitches. Run `sudo bash setup.sh`, then reboot so `dtparam=audio=off` takes effect.
 - **Rebuilding android/ from scratch:** If you delete the `android/` folder, regenerate it with `npx expo prebuild --platform android`, then re-apply the cleartext traffic fix in `AndroidManifest.xml` (add `android:networkSecurityConfig="@xml/network_security_config" android:usesCleartextTraffic="true"` to the `<application>` tag) and create `android/app/src/main/res/xml/network_security_config.xml` with `<base-config cleartextTrafficPermitted="true" />`.
 
 ## Files
@@ -168,4 +169,4 @@ sudo systemctl stop smart-led
 
 - Raspberry Pi (any model with WiFi)
 - WS2812B LED strip, 300 LEDs
-- Data pin: GPIO 18
+- Data pin: GPIO 18 (PWM, so onboard audio must stay disabled)

@@ -22,6 +22,27 @@ pip3 install rpi_ws281x --break-system-packages --quiet 2>/dev/null || \
 pip3 install websockets --break-system-packages --quiet 2>/dev/null || \
     pip3 install websockets --quiet
 
+# GPIO 18 uses the Pi's PWM hardware, which conflicts with onboard audio and
+# can cause random LED flicker during continuous animation updates.
+BOOT_CONFIG=""
+if [ -f /boot/firmware/config.txt ]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    BOOT_CONFIG="/boot/config.txt"
+fi
+
+if [ -n "$BOOT_CONFIG" ]; then
+    if grep -q '^dtparam=audio=' "$BOOT_CONFIG"; then
+        sed -i 's/^dtparam=audio=.*/dtparam=audio=off/' "$BOOT_CONFIG"
+    elif ! grep -q '^dtparam=audio=off' "$BOOT_CONFIG"; then
+        echo "dtparam=audio=off" >> "$BOOT_CONFIG"
+    fi
+fi
+
+if lsmod | grep -q '^snd_bcm2835'; then
+    modprobe -r snd_bcm2835 2>/dev/null || true
+fi
+
 # -------------------------------------------------------
 # 2. SD card protection — reduce writes to near zero
 # -------------------------------------------------------
@@ -115,6 +136,7 @@ echo "  - systemd journal set to volatile (RAM only)"
 echo "  - Swap disabled"
 echo "  - noatime added to root filesystem"
 echo "  - No logging from the LED service"
+echo "  - Onboard audio disabled to prevent PWM LED flicker on GPIO 18"
 echo ""
 echo "The smart-led service is now running and will auto-start on boot."
 echo ""
