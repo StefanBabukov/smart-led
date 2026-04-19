@@ -167,6 +167,7 @@ export default function App() {
   // AI animation state
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiProgressTokens, setAiProgressTokens] = useState(0);
   const [aiPreviewing, setAiPreviewing] = useState(false);
   const [aiPreviewName, setAiPreviewName] = useState('');
   const [aiError, setAiError] = useState(null);
@@ -257,6 +258,7 @@ export default function App() {
           if (data.ai_generating !== undefined) setAiGenerating(data.ai_generating);
           if (data.ai_previewing !== undefined) setAiPreviewing(data.ai_previewing);
           if (data.ai_preview_name !== undefined) setAiPreviewName(data.ai_preview_name || '');
+          if (data.ai_progress_tokens !== undefined) setAiProgressTokens(data.ai_progress_tokens);
           // Only sync brightness from server when not dragging
           if (!isDraggingBrightness.current) {
             setLocalBrightness(data.brightness);
@@ -264,15 +266,19 @@ export default function App() {
           }
         } else if (data.type === 'strip_colors') {
           setLedColors(data.colors.map(c => ({ r: c[0], g: c[1], b: c[2] })));
+        } else if (data.type === 'ai_progress') {
+          setAiProgressTokens(data.tokens || 0);
         } else if (data.type === 'ai_result') {
           if (data.status === 'previewing') {
             setAiGenerating(false);
+            setAiProgressTokens(0);
             setAiPreviewing(true);
             setAiPreviewName(data.name || '');
             setAiSaveName(data.name || '');
             setAiError(null);
           } else if (data.status === 'error' || data.status === 'runtime_error') {
             setAiGenerating(false);
+            setAiProgressTokens(0);
             setAiPreviewing(false);
             setAiError(data.error || 'Unknown error');
           }
@@ -967,7 +973,11 @@ export default function App() {
                   {aiGenerating ? (
                     <View style={styles.aiGeneratingRow}>
                       <ActivityIndicator color="#39f" size="small" />
-                      <Text style={styles.aiGeneratingText}>Generating animation...</Text>
+                      <Text style={styles.aiGeneratingText}>
+                        {aiProgressTokens > 0
+                          ? `Generating... (${aiProgressTokens} tokens)`
+                          : 'Generating animation...'}
+                      </Text>
                     </View>
                   ) : (
                     <TouchableOpacity

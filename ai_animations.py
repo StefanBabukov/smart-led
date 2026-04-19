@@ -20,10 +20,9 @@ from led_operations import fade_to_black, fill_all, get_pixel, set_pixel
 # ---------------------------------------------------------------------------
 
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b")
-OLLAMA_TIMEOUT = 120
+OLLAMA_TIMEOUT = 180
 OLLAMA_PORT = 11434
 AI_ANIMATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_animations")
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Cached Ollama host — discovered once, reused until server restart
 _ollama_host_cache = None
@@ -70,7 +69,6 @@ def discover_ollama():
 
     # Return cached result if available
     if _ollama_host_cache:
-        # Verify it's still alive
         try:
             ip = _ollama_host_cache.replace("http://", "").split(":")[0]
             if _check_ollama(ip):
@@ -83,18 +81,15 @@ def discover_ollama():
     if not local_ip:
         return None
 
-    # Build list of IPs to scan (/24 subnet)
     subnet = ".".join(local_ip.split(".")[:3])
     ips = [f"{subnet}.{i}" for i in range(1, 255) if f"{subnet}.{i}" != local_ip]
 
-    # Scan in parallel (50 threads, each with 1.5s timeout)
     with ThreadPoolExecutor(max_workers=50) as executor:
         futures = {executor.submit(_check_ollama, ip): ip for ip in ips}
         for future in as_completed(futures):
             result = future.result()
             if result:
                 _ollama_host_cache = f"http://{result}:{OLLAMA_PORT}"
-                # Cancel remaining futures
                 for f in futures:
                     f.cancel()
                 return _ollama_host_cache
@@ -115,241 +110,195 @@ def get_ollama_host():
 
 
 # ---------------------------------------------------------------------------
-# Reference animation loader
-# ---------------------------------------------------------------------------
-
-# Animation files to read for reference examples (relative to project dir).
-# These are curated for instructiveness — complex enough to teach patterns,
-# not so long they blow up the context window.
-REFERENCE_FILES = {
-    "fire.py": "Fire simulation with heat diffusion and color palette lookup",
-    "pacifica.py": "Ocean waves using layered sine waves, BPM timing, color palettes, and whitecap effects",
-    "animations.py": "Core animation library with physics, particles, meteors, sparkles, and wave effects",
-}
-
-# Only include these functions from animations.py (skip trivial ones)
-ANIMATIONS_PY_FUNCTIONS = [
-    "sparkle_step",
-    "split_cyclones_step",
-    "draw_cyclone_eye",
-    "meteor_rain_step",
-    "meteor_color_for_offset",
-    "bouncing_colored_balls_step",
-    "death_show_step",
-    "draw_frame_glow",
-    "add_frame_color",
-    "spawn_death_burst",
-    "spawn_death_wave",
-    "spawn_death_comet",
-    "draw_death_wave",
-    "draw_death_burst",
-    "draw_death_ember",
-    "draw_death_comet",
-]
-
-
-def _extract_functions(source, function_names):
-    """Extract specific function definitions from Python source code."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return ""
-
-    lines = source.splitlines()
-    extracted = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name in function_names:
-            # Get the function source lines
-            start = node.lineno - 1
-            end = node.end_lineno if hasattr(node, "end_lineno") else start + 1
-            func_lines = lines[start:end]
-            extracted.append("\n".join(func_lines))
-
-    return "\n\n".join(extracted)
-
-
-def _extract_top_level_data(source):
-    """Extract top-level variable assignments (palettes, state dicts, constants)."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return ""
-
-    lines = source.splitlines()
-    extracted = []
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.Assign):
-            start = node.lineno - 1
-            end = node.end_lineno if hasattr(node, "end_lineno") else start + 1
-            extracted.append("\n".join(lines[start:end]))
-
-    return "\n".join(extracted)
-
-
-def _load_reference_animations():
-    """Load and format reference animation code for the prompt."""
-    sections = []
-
-    for filename, description in REFERENCE_FILES.items():
-        filepath = os.path.join(PROJECT_DIR, filename)
-        if not os.path.isfile(filepath):
-            continue
-
-        try:
-            with open(filepath) as f:
-                source = f.read()
-        except OSError:
-            continue
-
-        if filename == "animations.py":
-            # Extract only the interesting functions + their supporting data
-            data = _extract_top_level_data(source)
-            funcs = _extract_functions(source, ANIMATIONS_PY_FUNCTIONS)
-            if funcs:
-                content = data + "\n\n" + funcs if data else funcs
-                sections.append(
-                    f"### Reference: {filename}\n"
-                    f"# {description}\n"
-                    f"# Selected functions showing physics, particles, and complex effects:\n\n"
-                    f"{content}"
-                )
-        else:
-            # Include the whole file (fire.py ~1.7KB, pacifica.py ~6.6KB)
-            # Strip import lines since the model shouldn't use them
-            filtered = "\n".join(
-                line for line in source.splitlines()
-                if not line.startswith("import ") and not line.startswith("from ")
-            )
-            sections.append(
-                f"### Reference: {filename}\n"
-                f"# {description}\n\n"
-                f"{filtered}"
-            )
-
-    return "\n\n".join(sections)
-
-
-# Build the reference section once at import time
-_REFERENCE_ANIMATIONS = _load_reference_animations()
-
-# ---------------------------------------------------------------------------
-# Prompt template
+# System prompt — lean with high-quality technique examples
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are a LED animation programmer. You write Python step functions for a \
-300-LED WS2812B strip running at 50 FPS.
+You are a LED animation programmer. Write Python animations for a 300-LED \
+WS2812B strip running at 50 FPS.
 
-## Rules
-1. Write EXACTLY ONE function named `ai_step(strip)` that renders one frame.
-2. Declare a module-level dict `ai_state = {}` BEFORE the function.
-   Inside ai_step, use `ai_state.setdefault("key", default)` to initialise \
-persistent state on the first frame.
-3. Available functions (already in scope — do NOT import them):
-   - set_pixel(strip, pixel_index, red, green, blue)   # index 0-299, RGB 0-255
-   - fill_all(strip, red, green, blue)                  # fill every LED
-   - fade_to_black(strip, led_no, fade_value)           # dim one pixel
-   - get_pixel(strip, led_no) -> (r, g, b)             # read a pixel
-   - clamp(value, minimum=0, maximum=255) -> int
-   - blend_colors(color_a, color_b, amount) -> (r,g,b)  # amount 0.0-1.0
-   - scale_color(color, factor) -> (r,g,b)              # factor 0.0-1.0
-   - monotonic_millis() -> int                           # ms since boot
-4. math, random, and time are already imported. Use time.monotonic() for \
-timing, math for trigonometry and noise, random for randomness.
-5. strip.numPixels() returns 300.
-6. ai_step is called ~50 times per second. Keep it fast:
-   - Avoid allocating large lists every frame — cache them in ai_state.
-   - Prefer simple loops over nested O(n^2) logic.
-7. Do NOT import anything. Do NOT use print, open, os, sys, subprocess, \
-eval, exec, __import__, or any I/O.
-8. Do NOT call strip.show() — the caller handles that.
-9. Output ONLY the Python code. No explanations, no markdown fences.
-10. do not just use the available functions, when required create your own functions for controlling the leds.
-11. Study the reference animations below carefully. They show advanced \
-techniques: heat diffusion (fire), layered sine waves with BPM timing \
-(pacifica/ocean), physics simulation with gravity and restitution (bouncing \
-balls), particle systems with spawn/decay (death show), recursive fractal \
-patterns (split cyclones), and color palette interpolation. Use these \
-techniques and patterns to create rich, complex animations.
+## Strict output rules
+- Output ONLY Python code. No markdown fences, no explanation.
+- First line must be: ai_state = {}
+- Must define exactly one function: def ai_step(strip):
+- Use ai_state.setdefault("key", default) to init persistent state.
+- Do NOT import anything. Do NOT call strip.show().
+- Only these are pre-imported and in scope:
+    math, random, time (use time.monotonic() for timing)
+    set_pixel(strip, i, r, g, b)  # i: 0-299, rgb: 0-255 int
+    fill_all(strip, r, g, b)
+    fade_to_black(strip, i, fade_value)
+    get_pixel(strip, i) -> (r, g, b)
+    clamp(v, lo=0, hi=255) -> int
+    blend_colors(c1, c2, t) -> (r,g,b)  # t: 0.0-1.0
+    scale_color(c, f) -> (r,g,b)  # f: 0.0-1.0
+    monotonic_millis() -> int
+- strip.numPixels() == 300. Cache any pre-computed lists in ai_state.
+- Always set pixels to non-zero values. Never leave all LEDs black.
 
-## Simple examples (showing the required ai_state + ai_step format)
+## Technique examples — study these carefully
 
-### Example 1: Breathing red glow
-
+### Technique 1: Multi-layer sine waves (like ocean, aurora)
 ai_state = {}
 
 def ai_step(strip):
-    ai_state.setdefault("phase", 0.0)
-    brightness = (math.sin(ai_state["phase"]) + 1) * 127.5
-    r = int(brightness)
-    fill_all(strip, r, 0, 0)
-    ai_state["phase"] += 0.05
-
-### Example 2: Blue meteor with trail
-
-ai_state = {}
-
-def ai_step(strip):
-    ai_state.setdefault("pos", 0)
     num = strip.numPixels()
+    t = time.monotonic()
+    for i in range(num):
+        # Layer 1: slow green wave
+        v1 = (math.sin(i * 0.07 + t * 0.8) + 1) * 0.5
+        # Layer 2: fast purple ripple
+        v2 = (math.sin(i * 0.13 - t * 1.4) + 1) * 0.5
+        # Layer 3: shimmer
+        v3 = (math.sin(i * 0.25 + t * 2.2) + 1) * 0.5
+        r = clamp(v2 * 120)
+        g = clamp(v1 * 200 + v3 * 40)
+        b = clamp(v1 * 80 + v2 * 150 + v3 * 30)
+        set_pixel(strip, i, r, g, b)
+
+### Technique 2: Heat simulation with color palette
+ai_state = {}
+
+HEAT_PALETTE = [
+    (0,0,0),(8,0,0),(18,0,0),(40,0,0),(80,0,0),(120,4,0),
+    (180,18,0),(220,60,0),(255,100,0),(255,160,0),(255,220,40),(255,255,120),
+]
+
+def _palette_color(heat):
+    idx = heat * (len(HEAT_PALETTE) - 1) / 255
+    lo = int(idx); hi = min(lo + 1, len(HEAT_PALETTE) - 1)
+    t = idx - lo
+    a, b = HEAT_PALETTE[lo], HEAT_PALETTE[hi]
+    return (int(a[0]+(b[0]-a[0])*t), int(a[1]+(b[1]-a[1])*t), int(a[2]+(b[2]-a[2])*t))
+
+def ai_step(strip):
+    num = strip.numPixels()
+    ai_state.setdefault("heat", [0]*num)
+    h = ai_state["heat"]
+    # Cool down
+    for i in range(num):
+        h[i] = max(0, h[i] - random.randint(2, 8))
+    # Diffuse upward
+    for i in range(num-1, 1, -1):
+        h[i] = (h[i-1] + h[i-2] + h[i-2]) // 3
+    # Spark at base
+    if random.randint(0, 255) < 160:
+        j = random.randint(0, min(8, num-1))
+        h[j] = min(255, h[j] + random.randint(120, 255))
+    for i in range(num):
+        r, g, b = _palette_color(h[i])
+        set_pixel(strip, i, r, g, b)
+
+### Technique 3: Particle system (sparks, embers, shooting stars)
+ai_state = {}
+
+def ai_step(strip):
+    num = strip.numPixels()
+    ai_state.setdefault("particles", [])
+    t = time.monotonic()
+    # Fade trail
+    for i in range(num):
+        fade_to_black(strip, i, 30)
+    # Spawn new particle
+    if random.random() < 0.15:
+        ai_state["particles"].append({
+            "pos": random.uniform(0, num),
+            "vel": random.choice([-1, 1]) * random.uniform(3, 8),
+            "life": random.uniform(0.5, 2.0),
+            "born": t,
+            "color": (random.randint(180,255), random.randint(60,180), random.randint(0,60)),
+        })
+    # Update + draw
+    alive = []
+    for p in ai_state["particles"]:
+        age = t - p["born"]
+        if age > p["life"]: continue
+        p["pos"] += p["vel"] * 0.02
+        fade = 1.0 - age / p["life"]
+        r, g, b = scale_color(p["color"], fade)
+        pi = int(p["pos"])
+        if 0 <= pi < num:
+            set_pixel(strip, pi, r, g, b)
+        alive.append(p)
+    ai_state["particles"] = alive
+
+### Technique 4: Physics bounce with gravity
+ai_state = {}
+
+def ai_step(strip):
+    num = strip.numPixels()
+    t = time.monotonic()
+    ai_state.setdefault("pos", float(num-1))
+    ai_state.setdefault("vel", 0.0)
+    ai_state.setdefault("last_t", t)
+    dt = min(0.05, t - ai_state["last_t"])
+    ai_state["last_t"] = t
+    ai_state["vel"] += 600.0 * dt
+    ai_state["pos"] += ai_state["vel"] * dt
+    if ai_state["pos"] >= num - 1:
+        ai_state["pos"] = float(num - 1)
+        ai_state["vel"] *= -0.75
     for i in range(num):
         fade_to_black(strip, i, 40)
-    head = ai_state["pos"] % num
-    set_pixel(strip, head, 200, 220, 255)
-    if head > 0:
-        set_pixel(strip, head - 1, 80, 120, 255)
-    if head > 1:
-        set_pixel(strip, head - 2, 30, 50, 180)
-    ai_state["pos"] += 2
+    p = int(ai_state["pos"])
+    speed = abs(ai_state["vel"])
+    brightness = min(1.0, speed / 400.0)
+    r, g, b = scale_color((255, 120, 0), brightness)
+    if 0 <= p < num:
+        set_pixel(strip, p, r, g, b)
+    if p > 0:
+        set_pixel(strip, p-1, *scale_color((255,60,0), brightness*0.4))
+    if p < num-1:
+        set_pixel(strip, p+1, *scale_color((255,60,0), brightness*0.4))
 
-### Example 3: Rainbow sparkle
-
+### Technique 5: Traveling wave with color gradient
 ai_state = {}
 
 def ai_step(strip):
-    ai_state.setdefault("hue_offset", 0)
     num = strip.numPixels()
+    ai_state.setdefault("offset", 0.0)
+    t = time.monotonic()
     for i in range(num):
-        hue = ((i * 256 // num) + ai_state["hue_offset"]) % 256
-        if hue < 85:
-            r, g, b = hue * 3, 255 - hue * 3, 0
-        elif hue < 170:
-            h = hue - 85
-            r, g, b = 255 - h * 3, 0, h * 3
-        else:
-            h = hue - 170
-            r, g, b = 0, h * 3, 255 - h * 3
-        if random.random() < 0.03:
-            r, g, b = 255, 255, 255
-        set_pixel(strip, i, r, g, b)
-    ai_state["hue_offset"] += 1
-
-## Reference animations from the existing codebase
-These are REAL working animations. Study them to understand how to build \
-complex effects. Note: they use a different function signature and state \
-pattern than what you should output — adapt the TECHNIQUES, not the format. \
-Your output must always use ai_state = {} and def ai_step(strip):.
-
+        # Map position to hue (0-360)
+        hue = (i * 360 / num + ai_state["offset"] * 2) % 360
+        # HSV to RGB: saturation=1, value varies by wave
+        wave = (math.sin(i * 0.08 + ai_state["offset"] * 0.05) + 1) * 0.5
+        v = 0.3 + 0.7 * wave
+        h = hue / 60
+        c = v
+        x = c * (1 - abs(h % 2 - 1))
+        if h < 1:   rgb = (c, x, 0)
+        elif h < 2: rgb = (x, c, 0)
+        elif h < 3: rgb = (0, c, x)
+        elif h < 4: rgb = (0, x, c)
+        elif h < 5: rgb = (x, 0, c)
+        else:       rgb = (c, 0, x)
+        set_pixel(strip, i, clamp(rgb[0]*255), clamp(rgb[1]*255), clamp(rgb[2]*255))
+    ai_state["offset"] += 1.5
 """
 
-# Append reference animations to system prompt
-SYSTEM_PROMPT += _REFERENCE_ANIMATIONS
-
 # ---------------------------------------------------------------------------
-# Ollama HTTP client
+# Ollama HTTP client with streaming progress
 # ---------------------------------------------------------------------------
 
 
-def call_ollama(user_prompt):
-    """Call Ollama and return the raw response text. Raises on failure."""
+def call_ollama(user_prompt, on_token=None):
+    """Call Ollama with streaming. Returns generated text. Raises on failure.
+
+    on_token(count, partial_text) is called every ~25 tokens if provided.
+    """
     host = get_ollama_host()
 
     payload = json.dumps({
         "model": OLLAMA_MODEL,
         "system": SYSTEM_PROMPT,
         "prompt": f"Create an LED animation: {user_prompt}",
-        "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 2048},
+        "stream": True,
+        "options": {
+            "temperature": 0.7,
+            "num_predict": 1200,
+            "num_ctx": 8192,
+        },
     }).encode()
 
     req = urllib.request.Request(
@@ -359,12 +308,26 @@ def call_ollama(user_prompt):
         method="POST",
     )
 
+    chunks = []
+    token_count = 0
     try:
         with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
-            body = json.loads(resp.read().decode())
-            return body.get("response", "")
+            for raw_line in resp:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                token = chunk.get("response", "")
+                chunks.append(token)
+                token_count += 1
+                if on_token and token_count % 25 == 0:
+                    on_token(token_count, "".join(chunks[-50:]))
+                if chunk.get("done"):
+                    break
     except urllib.error.URLError as exc:
-        # Clear cache so next attempt re-discovers
         global _ollama_host_cache
         _ollama_host_cache = None
         raise ConnectionError(
@@ -372,9 +335,9 @@ def call_ollama(user_prompt):
             "Is Ollama running on your laptop?"
         ) from exc
     except TimeoutError as exc:
-        raise TimeoutError(
-            "Generation timed out. Try a simpler prompt."
-        ) from exc
+        raise TimeoutError("Generation timed out. Try a simpler prompt.") from exc
+
+    return "".join(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -384,12 +347,10 @@ def call_ollama(user_prompt):
 
 def extract_code(response_text):
     """Extract Python code from the LLM response."""
-    # Try markdown fences first
     match = re.search(r"```(?:python)?\s*\n(.*?)```", response_text, re.DOTALL)
     if match:
         return match.group(1).strip()
 
-    # If no fences, look for ai_state and def ai_step markers
     lines = response_text.strip().splitlines()
     code_lines = []
     capturing = False
@@ -402,7 +363,6 @@ def extract_code(response_text):
     if code_lines:
         return "\n".join(code_lines)
 
-    # Last resort: return the whole thing if it looks like Python
     stripped = response_text.strip()
     if "def ai_step" in stripped:
         return stripped
@@ -441,11 +401,9 @@ def validate_code(code):
     has_ai_state = False
 
     for node in ast.walk(tree):
-        # Reject imports
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             return False, "Import statements are not allowed"
 
-        # Reject forbidden function calls
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name) and func.id in FORBIDDEN_NAMES:
@@ -453,21 +411,17 @@ def validate_code(code):
             if isinstance(func, ast.Attribute) and func.attr in FORBIDDEN_NAMES:
                 return False, f"Forbidden call: .{func.attr}()"
 
-        # Reject dunder attribute access (except __init__)
         if isinstance(node, ast.Attribute):
             if (node.attr.startswith("__") and node.attr.endswith("__")
                     and node.attr != "__init__"):
                 return False, f"Forbidden attribute: {node.attr}"
 
-        # Reject forbidden module references
         if isinstance(node, ast.Name) and node.id in FORBIDDEN_MODULES:
             return False, f"Forbidden reference: {node.id}"
 
-        # Check for ai_step function
         if isinstance(node, ast.FunctionDef) and node.name == "ai_step":
             has_ai_step = True
 
-        # Check for ai_state assignment
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "ai_state":
@@ -482,45 +436,106 @@ def validate_code(code):
 
 
 # ---------------------------------------------------------------------------
+# Mock strip — validate generated code actually lights up LEDs
+# ---------------------------------------------------------------------------
+
+
+class _MockStrip:
+    """Minimal strip object for test-running generated animations."""
+
+    def __init__(self, n=300):
+        self._n = n
+        self._pixels = [(0, 0, 0)] * n
+        self._any_nonblack = False
+
+    def numPixels(self):
+        return self._n
+
+    def setPixelColor(self, i, color):
+        if 0 <= i < self._n:
+            r = (color >> 16) & 0xFF
+            g = (color >> 8) & 0xFF
+            b = color & 0xFF
+            self._pixels[i] = (r, g, b)
+            if r or g or b:
+                self._any_nonblack = True
+
+    def getPixelColor(self, i):
+        if 0 <= i < self._n:
+            r, g, b = self._pixels[i]
+            return (r << 16) | (g << 8) | b
+        return 0
+
+    def show(self):
+        pass
+
+
+def _mock_set_pixel(strip, i, r, g, b):
+    r2, g2, b2 = int(max(0, min(255, r))), int(max(0, min(255, g))), int(max(0, min(255, b)))
+    if 0 <= i < strip._n:
+        strip._pixels[i] = (r2, g2, b2)
+        if r2 or g2 or b2:
+            strip._any_nonblack = True
+
+
+def _mock_fill_all(strip, r, g, b):
+    r2, g2, b2 = int(max(0, min(255, r))), int(max(0, min(255, g))), int(max(0, min(255, b)))
+    strip._pixels = [(r2, g2, b2)] * strip._n
+    if r2 or g2 or b2:
+        strip._any_nonblack = True
+
+
+def _mock_fade_to_black(strip, i, fade):
+    if 0 <= i < strip._n:
+        r, g, b = strip._pixels[i]
+        strip._pixels[i] = (max(0, r-fade), max(0, g-fade), max(0, b-fade))
+
+
+def _mock_get_pixel(strip, i):
+    if 0 <= i < strip._n:
+        return strip._pixels[i]
+    return (0, 0, 0)
+
+
+def test_animation(step_fn, frames=10):
+    """Run animation on mock strip for N frames. Returns True if any LEDs light up."""
+    mock = _MockStrip()
+    sandbox = {
+        "__builtins__": {},
+        "strip": mock,
+    }
+    try:
+        for _ in range(frames):
+            step_fn(mock)
+    except Exception as exc:
+        return False, f"Runtime error: {exc}"
+
+    if not mock._any_nonblack:
+        return False, "Animation produced no visible light (all LEDs stayed black)"
+
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Sandboxed execution
 # ---------------------------------------------------------------------------
 
 
 class _RestrictedTime:
-    """Only expose time.monotonic."""
-
     @staticmethod
     def monotonic():
         return time.monotonic()
 
 
 def create_sandbox_globals():
-    """Create the restricted globals dict for exec()."""
     allowed_builtins = {
-        "range": range,
-        "len": len,
-        "int": int,
-        "float": float,
-        "abs": abs,
-        "min": min,
-        "max": max,
-        "round": round,
-        "True": True,
-        "False": False,
-        "None": None,
-        "list": list,
-        "dict": dict,
-        "tuple": tuple,
-        "enumerate": enumerate,
-        "zip": zip,
-        "isinstance": isinstance,
-        "bool": bool,
-        "str": str,
-        "sorted": sorted,
-        "reversed": reversed,
-        "sum": sum,
-        "map": map,
-        "filter": filter,
+        "range": range, "len": len, "int": int, "float": float,
+        "abs": abs, "min": min, "max": max, "round": round,
+        "True": True, "False": False, "None": None,
+        "list": list, "dict": dict, "tuple": tuple,
+        "enumerate": enumerate, "zip": zip, "isinstance": isinstance,
+        "bool": bool, "str": str, "sorted": sorted, "reversed": reversed,
+        "sum": sum, "map": map, "filter": filter,
     }
     return {
         "__builtins__": allowed_builtins,
@@ -539,10 +554,7 @@ def create_sandbox_globals():
 
 
 def compile_ai_animation(code):
-    """Compile code in a sandbox and return (ai_step_fn, ai_state_dict).
-
-    Raises ValueError on failure.
-    """
+    """Compile code in sandbox. Returns (ai_step_fn, ai_state_dict). Raises on failure."""
     sandbox = create_sandbox_globals()
     try:
         exec(compile(code, "<ai_animation>", "exec"), sandbox)
@@ -553,15 +565,31 @@ def compile_ai_animation(code):
     if not callable(step_fn):
         raise ValueError("ai_step function not found after execution")
 
-    state = sandbox.get("ai_state", {})
-    return step_fn, state
+    # Validate on mock strip
+    mock = _MockStrip()
+    mock_sandbox = create_sandbox_globals()
+    mock_sandbox["set_pixel"] = _mock_set_pixel
+    mock_sandbox["fill_all"] = _mock_fill_all
+    mock_sandbox["fade_to_black"] = _mock_fade_to_black
+    mock_sandbox["get_pixel"] = _mock_get_pixel
+    try:
+        exec(compile(code, "<ai_animation_test>", "exec"), mock_sandbox)
+        test_fn = mock_sandbox.get("ai_step")
+        if callable(test_fn):
+            for _ in range(15):
+                test_fn(mock)
+            if not mock._any_nonblack:
+                raise ValueError("Animation produced no visible light after 15 frames")
+    except ValueError:
+        raise
+    except Exception:
+        pass  # runtime test failure is non-fatal; real strip may behave differently
+
+    return step_fn, sandbox.get("ai_state", {})
 
 
 def make_safe_step(step_fn, error_callback):
-    """Wrap an AI step function with runtime error handling.
-
-    After 3 consecutive errors the animation is stopped via error_callback.
-    """
+    """Wrap AI step function — stops after 3 consecutive crashes."""
     error_count = [0]
 
     def safe_step(strip):
@@ -587,7 +615,6 @@ def _sanitize_filename(name):
 
 
 def save_ai_animation(name, prompt, code):
-    """Save a generated animation to disk. Returns the metadata dict."""
     os.makedirs(AI_ANIMATIONS_DIR, exist_ok=True)
     animation_id = uuid.uuid4().hex[:8]
     metadata = {
@@ -599,14 +626,12 @@ def save_ai_animation(name, prompt, code):
     }
     safe_name = _sanitize_filename(name)
     filename = f"{safe_name}_{animation_id}.json"
-    filepath = os.path.join(AI_ANIMATIONS_DIR, filename)
-    with open(filepath, "w") as f:
+    with open(os.path.join(AI_ANIMATIONS_DIR, filename), "w") as f:
         json.dump(metadata, f, indent=2)
     return metadata
 
 
 def load_all_ai_animations():
-    """Load all saved AI animations from disk, sorted by creation time."""
     if not os.path.isdir(AI_ANIMATIONS_DIR):
         return []
     animations = []
@@ -626,7 +651,6 @@ def load_all_ai_animations():
 
 
 def delete_ai_animation(animation_id):
-    """Delete a saved animation by ID. Returns True if found and deleted."""
     if not os.path.isdir(AI_ANIMATIONS_DIR):
         return False
     for filename in os.listdir(AI_ANIMATIONS_DIR):
@@ -645,15 +669,7 @@ def delete_ai_animation(animation_id):
     return False
 
 
-# ---------------------------------------------------------------------------
-# Name heuristic
-# ---------------------------------------------------------------------------
-
-
 def prompt_to_name(prompt):
-    """Derive a display name from the user's prompt."""
     words = prompt.strip().split()[:5]
     name = " ".join(words).title()
-    if len(name) > 30:
-        name = name[:27] + "..."
-    return name
+    return name[:27] + "..." if len(name) > 30 else name

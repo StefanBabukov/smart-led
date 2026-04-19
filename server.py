@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import json
 import time
 from threading import Event, Lock, Thread
@@ -77,6 +78,7 @@ animation_config = {
 ai_generating = False
 ai_preview_state = None  # {"name", "prompt", "code", "step_fn"} or None
 ai_previous_effect = None  # effect index to restore on discard
+ai_progress_tokens = 0  # token count during generation, broadcast to clients
 AI_EFFECT_DEFINITIONS = []  # loaded from disk at startup
 
 
@@ -423,6 +425,7 @@ def get_state_dict():
         "ai_generating": ai_generating,
         "ai_previewing": ai_preview_state is not None,
         "ai_preview_name": ai_preview_state["name"] if ai_preview_state else None,
+        "ai_progress_tokens": ai_progress_tokens,
         "effect_key": None,
         "supports_animation_color": False,
         "supports_ball_count": False,
@@ -491,13 +494,29 @@ def adjust_ball_count(delta):
     )
 
 
+async def _broadcast_ai_progress(count):
+    """Send a token-count progress update to all connected clients."""
+    if connected_clients:
+        msg = json.dumps({"type": "ai_progress", "tokens": count})
+        await asyncio.gather(*(c.send(msg) for c in connected_clients), return_exceptions=True)
+
+
 async def _ai_generate_task(prompt, websocket):
     """Run AI generation in a background thread and handle the result."""
-    global ai_generating, ai_preview_state
+    global ai_generating, ai_preview_state, ai_progress_tokens
 
     loop = asyncio.get_event_loop()
+    ai_progress_tokens = 0
+
+    def on_token(count, _partial):
+        global ai_progress_tokens
+        ai_progress_tokens = count
+        asyncio.run_coroutine_threadsafe(_broadcast_ai_progress(count), loop)
+
     try:
-        response_text = await loop.run_in_executor(None, call_ollama, prompt)
+        response_text = await loop.run_in_executor(
+            None, functools.partial(call_ollama, prompt, on_token=on_token)
+        )
         code = extract_code(response_text)
         if not code:
             raise ValueError("No valid code in AI response. Try rephrasing your prompt.")
@@ -529,6 +548,7 @@ async def _ai_generate_task(prompt, websocket):
             "step_fn": safe_fn,
         }
         ai_generating = False
+        ai_progress_tokens = 0
 
         # Start previewing the animation
         start_effect(safe_fn)
@@ -548,6 +568,7 @@ async def _ai_generate_task(prompt, websocket):
     except Exception as exc:
         ai_generating = False
         ai_preview_state = None
+        ai_progress_tokens = 0
         msg = json.dumps({
             "type": "ai_result",
             "status": "error",
