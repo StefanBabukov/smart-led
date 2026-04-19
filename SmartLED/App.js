@@ -164,6 +164,9 @@ export default function App() {
   const lastWheelColor = useRef('');
   const gameHoldTimer = useRef(null);
 
+  // Animation list collapse
+  const [animListExpanded, setAnimListExpanded] = useState(true);
+
   // AI animation state
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -172,6 +175,12 @@ export default function App() {
   const [aiPreviewName, setAiPreviewName] = useState('');
   const [aiError, setAiError] = useState(null);
   const [aiSaveName, setAiSaveName] = useState('');
+  // AI edit state
+  const [aiEditingId, setAiEditingId] = useState(null);   // ai_id of saved anim being edited
+  const [aiEditingName, setAiEditingName] = useState(''); // display name for edit header
+  const [aiEditPrompt, setAiEditPrompt] = useState('');   // edit prompt text
+  const [aiPreviewEditMode, setAiPreviewEditMode] = useState(false); // edit section in preview box
+  const [aiIsEdit, setAiIsEdit] = useState(false);        // current preview came from an edit
 
   const wheelSegments = useMemo(() => generateWheelSegments(wheelSize), [wheelSize]);
   const wheelDotViews = useMemo(() => (
@@ -276,6 +285,11 @@ export default function App() {
             setAiPreviewName(data.name || '');
             setAiSaveName(data.name || '');
             setAiError(null);
+            setAiEditingId(null);
+            setAiEditingName('');
+            setAiEditPrompt('');
+            setAiPreviewEditMode(false);
+            setAiIsEdit(!!data.is_edit);
           } else if (data.status === 'error' || data.status === 'runtime_error') {
             setAiGenerating(false);
             setAiProgressTokens(0);
@@ -788,60 +802,85 @@ export default function App() {
             <View style={styles.animListSection}>
               <View style={styles.animListHeader}>
                 <Text style={styles.animListTitle}>Animations</Text>
-                <Text style={styles.animListCount}>
-                  {ledState.effect_index + 1} / {ledState.total_effects}
-                </Text>
-              </View>
-              <View style={styles.animListBox}>
-                {availableEffects.length > 0 ? (
-                  availableEffects.map((effect) => {
-                    const selected = effect.index === ledState.effect_index;
-                    return (
-                      <TouchableOpacity
-                        key={effect.key || String(effect.index)}
-                        style={[styles.animListItem, selected && styles.animListItemActive]}
-                        onPress={() => send('set_effect', { index: effect.index })}
-                        activeOpacity={0.6}
-                      >
-                        <View style={[styles.animListBadge, selected && styles.animListBadgeActive]}>
-                          <Text style={[styles.animListBadgeText, selected && styles.animListBadgeTextActive]}>
-                            {effect.index + 1}
-                          </Text>
-                        </View>
-                        <Text
-                          style={[styles.animListItemText, selected && styles.animListItemTextActive]}
-                          numberOfLines={2}
-                        >
-                          {effect.name}
-                        </Text>
-                        {effect.is_ai_generated && (
-                          <View style={styles.aiEffectRow}>
-                            <View style={styles.aiBadge}>
-                              <Text style={styles.aiBadgeText}>AI</Text>
-                            </View>
-                            <TouchableOpacity
-                              style={styles.aiDeleteBtn}
-                              onPress={(e) => {
-                                e.stopPropagation && e.stopPropagation();
-                                send('ai_delete', { ai_id: effect.ai_id });
-                              }}
-                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                            >
-                              <Text style={styles.aiDeleteBtnText}>X</Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })
-                ) : (
-                  <View style={styles.animListEmpty}>
-                    <Text style={styles.animListEmptyText}>
-                      {ledState.effect_name || 'Waiting for animation list...'}
+                <View style={styles.animListHeaderRight}>
+                  <Text style={styles.animListCount}>
+                    {ledState.effect_index + 1} / {ledState.total_effects}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.animListToggleBtn}
+                    onPress={() => setAnimListExpanded(prev => !prev)}
+                    activeOpacity={0.6}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.animListToggleIcon}>
+                      {animListExpanded ? '▾' : '▸'}
                     </Text>
-                  </View>
-                )}
+                  </TouchableOpacity>
+                </View>
               </View>
+              {animListExpanded && (
+                <View style={styles.animListBox}>
+                  {availableEffects.length > 0 ? (
+                    availableEffects.map((effect) => {
+                      const selected = effect.index === ledState.effect_index;
+                      return (
+                        <TouchableOpacity
+                          key={effect.key || String(effect.index)}
+                          style={[styles.animListItem, selected && styles.animListItemActive]}
+                          onPress={() => send('set_effect', { index: effect.index })}
+                          activeOpacity={0.6}
+                        >
+                          <View style={[styles.animListBadge, selected && styles.animListBadgeActive]}>
+                            <Text style={[styles.animListBadgeText, selected && styles.animListBadgeTextActive]}>
+                              {effect.index + 1}
+                            </Text>
+                          </View>
+                          <Text
+                            style={[styles.animListItemText, selected && styles.animListItemTextActive]}
+                            numberOfLines={2}
+                          >
+                            {effect.name}
+                          </Text>
+                          {effect.is_ai_generated && (
+                            <View style={styles.aiEffectRow}>
+                              <View style={styles.aiBadge}>
+                                <Text style={styles.aiBadgeText}>AI</Text>
+                              </View>
+                              <TouchableOpacity
+                                style={styles.aiEditBtn}
+                                onPress={() => {
+                                  setAiEditingId(effect.ai_id);
+                                  setAiEditingName(effect.name.replace(/^AI:\s*/, ''));
+                                  setAiEditPrompt('');
+                                  setAiPreviewing(false);
+                                  setAiPreviewEditMode(false);
+                                  setAiError(null);
+                                }}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <Text style={styles.aiEditBtnText}>✎</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.aiDeleteBtn}
+                                onPress={() => send('ai_delete', { ai_id: effect.ai_id })}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <Text style={styles.aiDeleteBtnText}>✕</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })
+                  ) : (
+                    <View style={styles.animListEmpty}>
+                      <Text style={styles.animListEmptyText}>
+                        {ledState.effect_name || 'Waiting for animation list...'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
             </View>
 
             {animationColorSupported && (
@@ -911,13 +950,18 @@ export default function App() {
               </View>
             )}
 
-            {/* AI Create Section */}
+            {/* AI Create / Edit Section */}
             <View style={styles.aiSection}>
-              <Text style={styles.aiSectionTitle}>AI Create</Text>
+              <Text style={styles.aiSectionTitle}>
+                {aiEditingId ? `AI Edit — ${aiEditingName}` : 'AI Create'}
+              </Text>
 
-              {aiPreviewing ? (
+              {/* ── Previewing state ── */}
+              {aiPreviewing && !aiGenerating ? (
                 <View style={styles.aiPreviewBox}>
-                  <Text style={styles.aiPreviewLabel}>Previewing: {aiPreviewName}</Text>
+                  <Text style={styles.aiPreviewLabel}>
+                    {aiIsEdit ? 'Edited: ' : 'Previewing: '}{aiPreviewName}
+                  </Text>
                   <TextInput
                     style={styles.aiNameInput}
                     value={aiSaveName}
@@ -940,24 +984,126 @@ export default function App() {
                         setAiPreviewing(false);
                         setAiPreviewName('');
                         setAiSaveName('');
+                        setAiIsEdit(false);
+                        setAiPreviewEditMode(false);
                       }}
                       activeOpacity={0.6}
                     >
                       <Text style={styles.aiDiscardBtnText}>Discard</Text>
                     </TouchableOpacity>
+                    {!aiIsEdit && (
+                      <TouchableOpacity
+                        style={styles.aiRegenerateBtn}
+                        onPress={() => {
+                          setAiPreviewing(false);
+                          setAiGenerating(true);
+                          send('ai_generate', { prompt: aiPrompt });
+                        }}
+                        activeOpacity={0.6}
+                      >
+                        <Text style={styles.aiRegenerateBtnText}>Retry</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* Edit-the-preview sub-section */}
+                  {aiPreviewEditMode ? (
+                    <View style={styles.aiInlineEditBox}>
+                      <TextInput
+                        style={styles.aiPromptInput}
+                        value={aiEditPrompt}
+                        onChangeText={setAiEditPrompt}
+                        placeholder="Describe changes... e.g. make it faster and more blue"
+                        placeholderTextColor="#555"
+                        multiline
+                        maxLength={500}
+                      />
+                      <View style={styles.aiPreviewBtnRow}>
+                        <TouchableOpacity
+                          style={[styles.aiSaveBtn, !aiEditPrompt.trim() && styles.aiGenerateBtnDisabled]}
+                          onPress={() => {
+                            if (aiEditPrompt.trim()) {
+                              setAiGenerating(true);
+                              setAiPreviewing(false);
+                              setAiPreviewEditMode(false);
+                              setAiError(null);
+                              send('ai_edit', { prompt: aiEditPrompt.trim() });
+                            }
+                          }}
+                          activeOpacity={0.6}
+                          disabled={!aiEditPrompt.trim()}
+                        >
+                          <Text style={styles.aiSaveBtnText}>Apply Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.aiDiscardBtn}
+                          onPress={() => { setAiPreviewEditMode(false); setAiEditPrompt(''); }}
+                          activeOpacity={0.6}
+                        >
+                          <Text style={styles.aiDiscardBtnText}>Cancel</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ) : (
                     <TouchableOpacity
-                      style={styles.aiRegenerateBtn}
-                      onPress={() => {
-                        setAiPreviewing(false);
-                        setAiGenerating(true);
-                        send('ai_generate', { prompt: aiPrompt });
-                      }}
+                      style={styles.aiEditPreviewToggleBtn}
+                      onPress={() => { setAiPreviewEditMode(true); setAiEditPrompt(''); }}
                       activeOpacity={0.6}
                     >
-                      <Text style={styles.aiRegenerateBtnText}>Retry</Text>
+                      <Text style={styles.aiEditPreviewToggleText}>✎  Edit this animation</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+              /* ── Generating / editing in progress ── */
+              ) : aiGenerating ? (
+                <View style={styles.aiGeneratingRow}>
+                  <ActivityIndicator color="#39f" size="small" />
+                  <Text style={styles.aiGeneratingText}>
+                    {aiProgressTokens > 0
+                      ? `${aiEditingId || aiPreviewEditMode ? 'Editing' : 'Generating'}... (${aiProgressTokens} tokens)`
+                      : aiEditingId ? 'Editing animation...' : 'Generating animation...'}
+                  </Text>
+                </View>
+
+              /* ── Edit saved animation mode ── */
+              ) : aiEditingId ? (
+                <>
+                  <TextInput
+                    style={styles.aiPromptInput}
+                    value={aiEditPrompt}
+                    onChangeText={setAiEditPrompt}
+                    placeholder="Describe changes... e.g. make it faster, add blue sparks"
+                    placeholderTextColor="#666"
+                    multiline
+                    maxLength={500}
+                  />
+                  <View style={styles.aiPreviewBtnRow}>
+                    <TouchableOpacity
+                      style={[styles.aiSaveBtn, !aiEditPrompt.trim() && styles.aiGenerateBtnDisabled]}
+                      onPress={() => {
+                        if (aiEditPrompt.trim()) {
+                          setAiGenerating(true);
+                          setAiError(null);
+                          send('ai_edit', { ai_id: aiEditingId, prompt: aiEditPrompt.trim() });
+                        }
+                      }}
+                      activeOpacity={0.6}
+                      disabled={!aiEditPrompt.trim()}
+                    >
+                      <Text style={styles.aiSaveBtnText}>Apply Edit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.aiDiscardBtn}
+                      onPress={() => { setAiEditingId(null); setAiEditingName(''); setAiEditPrompt(''); }}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={styles.aiDiscardBtnText}>Cancel</Text>
                     </TouchableOpacity>
                   </View>
-                </View>
+                </>
+
+              /* ── Idle: generate new ── */
               ) : (
                 <>
                   <TextInput
@@ -968,33 +1114,21 @@ export default function App() {
                     placeholderTextColor="#666"
                     multiline
                     maxLength={500}
-                    editable={!aiGenerating}
                   />
-                  {aiGenerating ? (
-                    <View style={styles.aiGeneratingRow}>
-                      <ActivityIndicator color="#39f" size="small" />
-                      <Text style={styles.aiGeneratingText}>
-                        {aiProgressTokens > 0
-                          ? `Generating... (${aiProgressTokens} tokens)`
-                          : 'Generating animation...'}
-                      </Text>
-                    </View>
-                  ) : (
-                    <TouchableOpacity
-                      style={[styles.aiGenerateBtn, !aiPrompt.trim() && styles.aiGenerateBtnDisabled]}
-                      onPress={() => {
-                        if (aiPrompt.trim()) {
-                          setAiGenerating(true);
-                          setAiError(null);
-                          send('ai_generate', { prompt: aiPrompt.trim() });
-                        }
-                      }}
-                      activeOpacity={0.6}
-                      disabled={!aiPrompt.trim()}
-                    >
-                      <Text style={styles.aiGenerateBtnText}>Generate</Text>
-                    </TouchableOpacity>
-                  )}
+                  <TouchableOpacity
+                    style={[styles.aiGenerateBtn, !aiPrompt.trim() && styles.aiGenerateBtnDisabled]}
+                    onPress={() => {
+                      if (aiPrompt.trim()) {
+                        setAiGenerating(true);
+                        setAiError(null);
+                        send('ai_generate', { prompt: aiPrompt.trim() });
+                      }
+                    }}
+                    activeOpacity={0.6}
+                    disabled={!aiPrompt.trim()}
+                  >
+                    <Text style={styles.aiGenerateBtnText}>Generate</Text>
+                  </TouchableOpacity>
                 </>
               )}
 
@@ -1005,7 +1139,10 @@ export default function App() {
                     style={styles.aiTryAgainBtn}
                     onPress={() => {
                       setAiError(null);
-                      if (aiPrompt.trim()) {
+                      if (aiEditingId && aiEditPrompt.trim()) {
+                        setAiGenerating(true);
+                        send('ai_edit', { ai_id: aiEditingId, prompt: aiEditPrompt.trim() });
+                      } else if (aiPrompt.trim()) {
                         setAiGenerating(true);
                         send('ai_generate', { prompt: aiPrompt.trim() });
                       }
@@ -2186,6 +2323,48 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  aiInlineEditBox: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a4a',
+  },
+  aiEditPreviewToggleBtn: {
+    marginTop: 12,
+    paddingVertical: 8,
+    alignItems: 'center',
+    backgroundColor: '#1a1a3a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#2a2a5a',
+  },
+  aiEditPreviewToggleText: {
+    color: '#7788ee',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  // Anim list collapse
+  animListHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  animListToggleBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a2a2a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#444',
+  },
+  animListToggleIcon: {
+    color: '#aaa',
+    fontSize: 16,
+    lineHeight: 18,
+  },
+
   aiEffectRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2203,6 +2382,20 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.5,
+  },
+  aiEditBtn: {
+    backgroundColor: '#1a3a5a',
+    borderRadius: 4,
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aiEditBtnText: {
+    color: '#39f',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 16,
   },
   aiDeleteBtn: {
     backgroundColor: '#662222',

@@ -20,7 +20,7 @@ from led_operations import fade_to_black, fill_all, get_pixel, set_pixel
 # ---------------------------------------------------------------------------
 
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b")
-OLLAMA_TIMEOUT = 180
+OLLAMA_TIMEOUT = 480  # 8 min — covers 32B models with RAM offload
 OLLAMA_PORT = 11434
 AI_ANIMATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_animations")
 
@@ -282,32 +282,26 @@ def ai_step(strip):
 # ---------------------------------------------------------------------------
 
 
-def call_ollama(user_prompt, on_token=None):
-    """Call Ollama with streaming. Returns generated text. Raises on failure.
-
-    on_token(count, partial_text) is called every ~25 tokens if provided.
-    """
+def _ollama_stream(user_prompt, temperature=0.7, on_token=None):
+    """Internal: send a streaming request to Ollama. Returns full generated text."""
     host = get_ollama_host()
-
     payload = json.dumps({
         "model": OLLAMA_MODEL,
         "system": SYSTEM_PROMPT,
-        "prompt": f"Create an LED animation: {user_prompt}",
+        "prompt": user_prompt,
         "stream": True,
         "options": {
-            "temperature": 0.7,
+            "temperature": temperature,
             "num_predict": 1200,
             "num_ctx": 8192,
         },
     }).encode()
-
     req = urllib.request.Request(
         f"{host}/api/generate",
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-
     chunks = []
     token_count = 0
     try:
@@ -336,8 +330,27 @@ def call_ollama(user_prompt, on_token=None):
         ) from exc
     except TimeoutError as exc:
         raise TimeoutError("Generation timed out. Try a simpler prompt.") from exc
-
     return "".join(chunks)
+
+
+def call_ollama(user_prompt, on_token=None):
+    """Generate a new animation from a natural-language prompt."""
+    return _ollama_stream(
+        f"Create an LED animation: {user_prompt}",
+        temperature=0.7,
+        on_token=on_token,
+    )
+
+
+def call_ollama_edit(existing_code, edit_prompt, on_token=None):
+    """Edit existing animation code based on an edit prompt."""
+    prompt = (
+        f"Here is the current LED animation code:\n\n{existing_code}\n\n"
+        f"Modify it to: {edit_prompt}\n\n"
+        "Output ONLY the modified Python code. "
+        "Preserve the ai_state = {} and def ai_step(strip): structure exactly."
+    )
+    return _ollama_stream(prompt, temperature=0.5, on_token=on_token)
 
 
 # ---------------------------------------------------------------------------

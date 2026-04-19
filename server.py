@@ -8,6 +8,7 @@ from rpi_ws281x import PixelStrip
 
 from ai_animations import (
     call_ollama,
+    call_ollama_edit,
     compile_ai_animation,
     delete_ai_animation,
     extract_code,
@@ -581,6 +582,87 @@ async def _ai_generate_task(prompt, websocket):
         await broadcast_state()
 
 
+async def _ai_edit_task(source_code, edit_prompt, edit_source_id, websocket):
+    """Run AI edit in a background thread and handle the result."""
+    global ai_generating, ai_preview_state, ai_progress_tokens
+
+    loop = asyncio.get_event_loop()
+    ai_progress_tokens = 0
+
+    def on_token(count, _partial):
+        global ai_progress_tokens
+        ai_progress_tokens = count
+        asyncio.run_coroutine_threadsafe(_broadcast_ai_progress(count), loop)
+
+    try:
+        response_text = await loop.run_in_executor(
+            None, functools.partial(call_ollama_edit, source_code, edit_prompt, on_token=on_token)
+        )
+        code = extract_code(response_text)
+        if not code:
+            raise ValueError("No valid code in AI response. Try rephrasing your edit.")
+
+        ok, err = validate_code(code)
+        if not ok:
+            raise ValueError(f"Generated code is unsafe: {err}")
+
+        step_fn, _state = compile_ai_animation(code)
+
+        runtime_error_sent = [False]
+
+        def on_runtime_error(error_msg):
+            if not runtime_error_sent[0]:
+                runtime_error_sent[0] = True
+                asyncio.run_coroutine_threadsafe(
+                    _send_ai_error(websocket, f"Animation crashed: {error_msg}"),
+                    loop,
+                )
+
+        safe_fn = make_safe_step(step_fn, on_runtime_error)
+        # Keep the original name when editing
+        name = ai_preview_state["name"] if ai_preview_state else prompt_to_name(edit_prompt)
+
+        ai_preview_state = {
+            "name": name,
+            "prompt": edit_prompt,
+            "code": code,
+            "step_fn": safe_fn,
+            "edit_source_id": edit_source_id,
+        }
+        ai_generating = False
+        ai_progress_tokens = 0
+
+        start_effect(safe_fn)
+
+        msg = json.dumps({
+            "type": "ai_result",
+            "status": "previewing",
+            "name": name,
+            "prompt": edit_prompt,
+            "is_edit": True,
+        })
+        try:
+            await websocket.send(msg)
+        except Exception:
+            pass
+        await broadcast_state()
+
+    except Exception as exc:
+        ai_generating = False
+        ai_preview_state = None
+        ai_progress_tokens = 0
+        msg = json.dumps({
+            "type": "ai_result",
+            "status": "error",
+            "error": str(exc),
+        })
+        try:
+            await websocket.send(msg)
+        except Exception:
+            pass
+        await broadcast_state()
+
+
 async def _send_ai_error(websocket, error_msg):
     """Send a runtime error message to the client."""
     global ai_preview_state
@@ -713,10 +795,13 @@ async def handle_command(action, data, websocket=None):
             name = str(data.get("name", ai_preview_state["name"])).strip()
             if not name:
                 name = ai_preview_state["name"]
+            # If editing a saved animation, delete the original before saving
+            edit_source_id = ai_preview_state.get("edit_source_id")
+            if edit_source_id:
+                delete_ai_animation(edit_source_id)
             save_ai_animation(name, ai_preview_state["prompt"], ai_preview_state["code"])
             ai_preview_state = None
             rebuild_ai_effects()
-            # Select the newly saved animation (last in AI list)
             selected_effect = len(all_effects()) - 1
             if current_mode == "animation" and animations_enabled:
                 run_effect(selected_effect)
@@ -732,6 +817,37 @@ async def handle_command(action, data, websocket=None):
                     run_effect(selected_effect)
         else:
             should_broadcast = False
+    elif action == "ai_edit":
+        prompt = str(data.get("prompt", "")).strip()
+        ai_id = str(data.get("ai_id", "")).strip()
+        if not prompt:
+            should_broadcast = False
+        else:
+            source_code = None
+            edit_source_id = None
+            if ai_id:
+                # Editing a saved animation — load its code from disk
+                saved = load_all_ai_animations()
+                target = next((a for a in saved if a["id"] == ai_id), None)
+                if target:
+                    source_code = target["code"]
+                    edit_source_id = ai_id
+            elif ai_preview_state:
+                # Editing the current preview
+                source_code = ai_preview_state["code"]
+                edit_source_id = ai_preview_state.get("edit_source_id")
+            if source_code:
+                ai_generating = True
+                if ai_previous_effect is None:
+                    ai_previous_effect = selected_effect
+                ai_preview_state = None
+                await broadcast_state()
+                should_broadcast = False
+                asyncio.get_event_loop().create_task(
+                    _ai_edit_task(source_code, prompt, edit_source_id, websocket)
+                )
+            else:
+                should_broadcast = False
     elif action == "ai_delete":
         ai_id = str(data.get("ai_id", ""))
         if ai_id and delete_ai_animation(ai_id):
