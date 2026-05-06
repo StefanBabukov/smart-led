@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import json
+import logging
 import time
 from threading import Event, Lock, Thread
 
@@ -33,6 +34,13 @@ except ImportError:
     import sys
 
     sys.exit("websockets not installed. Run: sudo pip3 install websockets --break-system-packages")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("smart-led")
 
 
 # LED strip configuration
@@ -508,6 +516,7 @@ async def _ai_generate_task(prompt, websocket):
 
     loop = asyncio.get_event_loop()
     ai_progress_tokens = 0
+    log.info("AI generate | prompt: %r", prompt)
 
     def on_token(count, _partial):
         global ai_progress_tokens
@@ -518,6 +527,7 @@ async def _ai_generate_task(prompt, websocket):
         response_text = await loop.run_in_executor(
             None, functools.partial(generate_animation, prompt, on_token=on_token)
         )
+        log.info("AI generate | received %d chars", len(response_text))
         code = extract_code(response_text)
         if not code:
             raise ValueError("No valid code in AI response. Try rephrasing your prompt.")
@@ -526,6 +536,7 @@ async def _ai_generate_task(prompt, websocket):
         if not ok:
             raise ValueError(f"Generated code is unsafe: {err}")
 
+        log.info("AI generate | code validated (%d lines)", code.count("\n"))
         step_fn, _state = compile_ai_animation(code)
 
         # Wrap with runtime safety
@@ -567,6 +578,7 @@ async def _ai_generate_task(prompt, websocket):
         await broadcast_state()
 
     except Exception as exc:
+        log.error("AI generate | FAILED: %s", exc)
         ai_generating = False
         ai_preview_state = None
         ai_progress_tokens = 0
@@ -588,6 +600,7 @@ async def _ai_edit_task(source_code, edit_prompt, edit_source_id, websocket):
 
     loop = asyncio.get_event_loop()
     ai_progress_tokens = 0
+    log.info("AI edit | prompt: %r", edit_prompt)
 
     def on_token(count, _partial):
         global ai_progress_tokens
@@ -598,6 +611,7 @@ async def _ai_edit_task(source_code, edit_prompt, edit_source_id, websocket):
         response_text = await loop.run_in_executor(
             None, functools.partial(edit_animation, source_code, edit_prompt, on_token=on_token)
         )
+        log.info("AI edit | received %d chars", len(response_text))
         code = extract_code(response_text)
         if not code:
             raise ValueError("No valid code in AI response. Try rephrasing your edit.")
@@ -648,6 +662,7 @@ async def _ai_edit_task(source_code, edit_prompt, edit_source_id, websocket):
         await broadcast_state()
 
     except Exception as exc:
+        log.error("AI edit | FAILED: %s", exc)
         ai_generating = False
         ai_preview_state = None
         ai_progress_tokens = 0
@@ -873,6 +888,8 @@ async def handle_command(action, data, websocket=None):
 
 
 async def handler(websocket):
+    addr = websocket.remote_address
+    log.info("Client connected: %s:%s", *addr)
     connected_clients.add(websocket)
     try:
         await websocket.send(json.dumps(get_state_dict()))
@@ -895,16 +912,28 @@ async def handler(websocket):
     except websockets.ConnectionClosed:
         pass
     finally:
+        log.info("Client disconnected: %s:%s", *addr)
         connected_clients.discard(websocket)
 
 
 async def main():
+    import ai_animations as _ai
     global selected_effect, server_loop
     server_loop = asyncio.get_running_loop()
+
+    key = _ai.GEMINI_API_KEY
+    key_display = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else ("(set)" if key else "(NOT SET)")
+    log.info("=== smart-led server starting ===")
+    log.info("Gemini model : %s", _ai.GEMINI_MODEL)
+    log.info("Gemini key   : %s", key_display)
+    log.info("Max tokens   : %d", _ai.GEMINI_MAX_OUTPUT_TOKENS)
+    log.info("LED count    : %d", LED_COUNT)
+
     rebuild_ai_effects()
     selected_effect = 0
     run_effect(selected_effect)
 
+    log.info("WebSocket server listening on ws://0.0.0.0:8765")
     async with websockets.serve(handler, "0.0.0.0", 8765):
         await asyncio.Future()
 
