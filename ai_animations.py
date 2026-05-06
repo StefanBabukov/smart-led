@@ -4,12 +4,10 @@ import math
 import os
 import random
 import re
-import socket
 import time
 import urllib.error
 import urllib.request
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from animations import blend_colors, clamp, monotonic_millis, scale_color
@@ -19,110 +17,18 @@ from led_operations import fade_to_black, fill_all, get_pixel, set_pixel
 # Configuration
 # ---------------------------------------------------------------------------
 
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b")
-OLLAMA_TIMEOUT = 480  # 8 min — covers 32B models with RAM offload
-OLLAMA_PORT = 11434
-AI_ANIMATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_animations")
-
-# Backend selection: "ollama" (local) or "gemini" (Google AI Studio free tier)
-AI_BACKEND = os.environ.get("AI_BACKEND", "ollama").lower()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
 GEMINI_TIMEOUT = 300
-# Gemini 2.5 Pro free tier supports up to 65536 output tokens per request — use it.
 GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "65536"))
 
-# Reference animations fed to Gemini for few-shot quality. Loaded lazily.
+AI_ANIMATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_animations")
+
 _REFERENCE_FILES = ("pacifica.py", "halloween_scene.py", "xmas_scene.py", "fire.py")
 _reference_cache = None
 
-# Cached Ollama host — discovered once, reused until server restart
-_ollama_host_cache = None
-
 # ---------------------------------------------------------------------------
-# Ollama auto-discovery
-# ---------------------------------------------------------------------------
-
-
-def _get_local_ip():
-    """Get this machine's local IP address."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return None
-
-
-def _check_ollama(ip):
-    """Check if Ollama is running at the given IP. Returns ip or None."""
-    url = f"http://{ip}:{OLLAMA_PORT}/api/tags"
-    try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            if resp.status == 200:
-                return ip
-    except Exception:
-        pass
-    return None
-
-
-def discover_ollama():
-    """Scan the local /24 subnet for an Ollama server. Returns host URL or None."""
-    global _ollama_host_cache
-
-    # Check environment variable first
-    env_host = os.environ.get("OLLAMA_HOST")
-    if env_host:
-        _ollama_host_cache = env_host.rstrip("/")
-        return _ollama_host_cache
-
-    # Return cached result if available
-    if _ollama_host_cache:
-        try:
-            ip = _ollama_host_cache.replace("http://", "").split(":")[0]
-            if _check_ollama(ip):
-                return _ollama_host_cache
-        except Exception:
-            pass
-        _ollama_host_cache = None
-
-    local_ip = _get_local_ip()
-    if not local_ip:
-        return None
-
-    subnet = ".".join(local_ip.split(".")[:3])
-    ips = [f"{subnet}.{i}" for i in range(1, 255) if f"{subnet}.{i}" != local_ip]
-
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        futures = {executor.submit(_check_ollama, ip): ip for ip in ips}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                _ollama_host_cache = f"http://{result}:{OLLAMA_PORT}"
-                for f in futures:
-                    f.cancel()
-                return _ollama_host_cache
-
-    return None
-
-
-def get_ollama_host():
-    """Get the Ollama host URL, discovering it if necessary. Raises on failure."""
-    host = discover_ollama()
-    if not host:
-        raise ConnectionError(
-            "Could not find Ollama on your network. "
-            "Make sure Ollama is running on your laptop with: "
-            "OLLAMA_HOST=0.0.0.0 ollama serve"
-        )
-    return host
-
-
-# ---------------------------------------------------------------------------
-# System prompt — lean with high-quality technique examples
+# System prompt
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
@@ -148,7 +54,7 @@ WS2812B strip running at 50 FPS.
 - strip.numPixels() == 300. Cache any pre-computed lists in ai_state.
 - Always set pixels to non-zero values. Never leave all LEDs black.
 
-## Technique examples — study these carefully
+## Technique examples — study these carefully, create your own techniques and be a professional light engineer. use complex math to do complex operations.
 
 ### Technique 1: Multi-layer sine waves (like ocean, aurora)
 ai_state = {}
@@ -187,13 +93,10 @@ def ai_step(strip):
     num = strip.numPixels()
     ai_state.setdefault("heat", [0]*num)
     h = ai_state["heat"]
-    # Cool down
     for i in range(num):
         h[i] = max(0, h[i] - random.randint(2, 8))
-    # Diffuse upward
     for i in range(num-1, 1, -1):
         h[i] = (h[i-1] + h[i-2] + h[i-2]) // 3
-    # Spark at base
     if random.randint(0, 255) < 160:
         j = random.randint(0, min(8, num-1))
         h[j] = min(255, h[j] + random.randint(120, 255))
@@ -208,10 +111,8 @@ def ai_step(strip):
     num = strip.numPixels()
     ai_state.setdefault("particles", [])
     t = time.monotonic()
-    # Fade trail
     for i in range(num):
         fade_to_black(strip, i, 30)
-    # Spawn new particle
     if random.random() < 0.15:
         ai_state["particles"].append({
             "pos": random.uniform(0, num),
@@ -220,7 +121,6 @@ def ai_step(strip):
             "born": t,
             "color": (random.randint(180,255), random.randint(60,180), random.randint(0,60)),
         })
-    # Update + draw
     alive = []
     for p in ai_state["particles"]:
         age = t - p["born"]
@@ -271,9 +171,7 @@ def ai_step(strip):
     ai_state.setdefault("offset", 0.0)
     t = time.monotonic()
     for i in range(num):
-        # Map position to hue (0-360)
         hue = (i * 360 / num + ai_state["offset"] * 2) % 360
-        # HSV to RGB: saturation=1, value varies by wave
         wave = (math.sin(i * 0.08 + ai_state["offset"] * 0.05) + 1) * 0.5
         v = 0.3 + 0.7 * wave
         h = hue / 60
@@ -290,67 +188,11 @@ def ai_step(strip):
 """
 
 # ---------------------------------------------------------------------------
-# Ollama HTTP client with streaming progress
+# Reference animations — loaded once, injected into every prompt
 # ---------------------------------------------------------------------------
 
 
-def _ollama_stream(user_prompt, temperature=0.7, on_token=None):
-    """Internal: send a streaming request to Ollama. Returns full generated text."""
-    host = get_ollama_host()
-    payload = json.dumps({
-        "model": OLLAMA_MODEL,
-        "system": SYSTEM_PROMPT,
-        "prompt": user_prompt,
-        "stream": True,
-        "options": {
-            "temperature": temperature,
-            "num_predict": 1200,
-            "num_ctx": 8192,
-        },
-    }).encode()
-    req = urllib.request.Request(
-        f"{host}/api/generate",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    chunks = []
-    token_count = 0
-    try:
-        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
-            for raw_line in resp:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                token = chunk.get("response", "")
-                chunks.append(token)
-                token_count += 1
-                if on_token and token_count % 25 == 0:
-                    on_token(token_count, "".join(chunks[-50:]))
-                if chunk.get("done"):
-                    break
-    except urllib.error.URLError as exc:
-        global _ollama_host_cache
-        _ollama_host_cache = None
-        raise ConnectionError(
-            f"AI server unreachable at {host}. "
-            "Is Ollama running on your laptop?"
-        ) from exc
-    except TimeoutError as exc:
-        raise TimeoutError("Generation timed out. Try a simpler prompt.") from exc
-    return "".join(chunks)
-
-
 def _load_reference_animations():
-    """Read reference animation files and format them as a few-shot block.
-
-    Cached after first call. Files that fail to read are silently skipped — the
-    references improve quality but are not strictly required.
-    """
     global _reference_cache
     if _reference_cache is not None:
         return _reference_cache
@@ -375,7 +217,7 @@ def _load_reference_animations():
         "The files below are hand-tuned production animations from this project. "
         "They use module-level `import` statements and direct `rpi_ws281x` calls "
         "that are NOT available in your sandbox. DO NOT copy imports or module-level "
-        "state. Instead, study the *techniques* — palette gradients, layered sin "
+        "state. Instead, study the *techniques* — palette gradients, layered sine "
         "waves with different bpms/phases, particle physics, multi-stage scene "
         "composition — and translate them into the required `ai_state = {}` + "
         "`def ai_step(strip):` form using only the helpers listed above.\n\n"
@@ -385,20 +227,19 @@ def _load_reference_animations():
 
 
 # ---------------------------------------------------------------------------
-# Gemini HTTP client (Google AI Studio free tier)
+# Gemini HTTP client (Google AI Studio)
 # ---------------------------------------------------------------------------
 
 
 def _gemini_stream(user_prompt, temperature=0.7, on_token=None):
-    """Send a streaming request to Gemini. Returns full generated text."""
     if not GEMINI_API_KEY:
         raise ConnectionError(
-            "GEMINI_API_KEY is not set. Get a free key at "
-            "https://aistudio.google.com/apikey and export GEMINI_API_KEY=..."
+            "GEMINI_API_KEY is not set. "
+            "Get a free key at https://aistudio.google.com/apikey "
+            "and add it to your service environment."
         )
 
     system_text = SYSTEM_PROMPT + _load_reference_animations()
-
     payload = json.dumps({
         "system_instruction": {"parts": [{"text": system_text}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -448,11 +289,9 @@ def _gemini_stream(user_prompt, temperature=0.7, on_token=None):
             body = exc.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
-        raise ConnectionError(
-            f"Gemini API error {exc.code}: {exc.reason}. {body}"
-        ) from exc
+        raise ConnectionError(f"Gemini API error {exc.code}: {exc.reason}. {body}") from exc
     except urllib.error.URLError as exc:
-        raise ConnectionError(f"Gemini API unreachable: {exc.reason}") from exc
+        raise ConnectionError(f"Gemini unreachable: {exc.reason}") from exc
     except TimeoutError as exc:
         raise TimeoutError("Gemini generation timed out.") from exc
 
@@ -460,38 +299,22 @@ def _gemini_stream(user_prompt, temperature=0.7, on_token=None):
 
 
 # ---------------------------------------------------------------------------
-# Backend dispatch — public entrypoints used by server.py
+# Public generation API
 # ---------------------------------------------------------------------------
 
 
-def _generate(user_prompt, temperature, on_token):
-    if AI_BACKEND == "gemini":
-        return _gemini_stream(user_prompt, temperature=temperature, on_token=on_token)
-    return _ollama_stream(user_prompt, temperature=temperature, on_token=on_token)
+def generate_animation(user_prompt, on_token=None):
+    return _gemini_stream(f"Create an LED animation: {user_prompt}", temperature=0.7, on_token=on_token)
 
 
-def call_ollama(user_prompt, on_token=None):
-    """Generate a new animation from a natural-language prompt.
-
-    Name preserved for backward compatibility with server.py; routes to whichever
-    backend AI_BACKEND selects.
-    """
-    return _generate(
-        f"Create an LED animation: {user_prompt}",
-        temperature=0.7,
-        on_token=on_token,
-    )
-
-
-def call_ollama_edit(existing_code, edit_prompt, on_token=None):
-    """Edit existing animation code based on an edit prompt."""
+def edit_animation(existing_code, edit_prompt, on_token=None):
     prompt = (
         f"Here is the current LED animation code:\n\n{existing_code}\n\n"
         f"Modify it to: {edit_prompt}\n\n"
         "Output ONLY the modified Python code. "
         "Preserve the ai_state = {} and def ai_step(strip): structure exactly."
     )
-    return _generate(prompt, temperature=0.5, on_token=on_token)
+    return _gemini_stream(prompt, temperature=0.5, on_token=on_token)
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +323,6 @@ def call_ollama_edit(existing_code, edit_prompt, on_token=None):
 
 
 def extract_code(response_text):
-    """Extract Python code from the LLM response."""
     match = re.search(r"```(?:python)?\s*\n(.*?)```", response_text, re.DOTALL)
     if match:
         return match.group(1).strip()
@@ -513,7 +335,6 @@ def extract_code(response_text):
             capturing = True
         if capturing:
             code_lines.append(line)
-
     if code_lines:
         return "\n".join(code_lines)
 
@@ -545,7 +366,6 @@ FORBIDDEN_MODULES = frozenset({
 
 
 def validate_code(code):
-    """Static AST validation. Returns (ok, error_message)."""
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
@@ -566,8 +386,7 @@ def validate_code(code):
                 return False, f"Forbidden call: .{func.attr}()"
 
         if isinstance(node, ast.Attribute):
-            if (node.attr.startswith("__") and node.attr.endswith("__")
-                    and node.attr != "__init__"):
+            if node.attr.startswith("__") and node.attr.endswith("__") and node.attr != "__init__":
                 return False, f"Forbidden attribute: {node.attr}"
 
         if isinstance(node, ast.Name) and node.id in FORBIDDEN_MODULES:
@@ -590,13 +409,11 @@ def validate_code(code):
 
 
 # ---------------------------------------------------------------------------
-# Mock strip — validate generated code actually lights up LEDs
+# Mock strip for sandbox validation
 # ---------------------------------------------------------------------------
 
 
 class _MockStrip:
-    """Minimal strip object for test-running generated animations."""
-
     def __init__(self, n=300):
         self._n = n
         self._pixels = [(0, 0, 0)] * n
@@ -642,32 +459,13 @@ def _mock_fill_all(strip, r, g, b):
 def _mock_fade_to_black(strip, i, fade):
     if 0 <= i < strip._n:
         r, g, b = strip._pixels[i]
-        strip._pixels[i] = (max(0, r-fade), max(0, g-fade), max(0, b-fade))
+        strip._pixels[i] = (max(0, r - fade), max(0, g - fade), max(0, b - fade))
 
 
 def _mock_get_pixel(strip, i):
     if 0 <= i < strip._n:
         return strip._pixels[i]
     return (0, 0, 0)
-
-
-def test_animation(step_fn, frames=10):
-    """Run animation on mock strip for N frames. Returns True if any LEDs light up."""
-    mock = _MockStrip()
-    sandbox = {
-        "__builtins__": {},
-        "strip": mock,
-    }
-    try:
-        for _ in range(frames):
-            step_fn(mock)
-    except Exception as exc:
-        return False, f"Runtime error: {exc}"
-
-    if not mock._any_nonblack:
-        return False, "Animation produced no visible light (all LEDs stayed black)"
-
-    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +506,6 @@ def create_sandbox_globals():
 
 
 def compile_ai_animation(code):
-    """Compile code in sandbox. Returns (ai_step_fn, ai_state_dict). Raises on failure."""
     sandbox = create_sandbox_globals()
     try:
         exec(compile(code, "<ai_animation>", "exec"), sandbox)
@@ -719,7 +516,6 @@ def compile_ai_animation(code):
     if not callable(step_fn):
         raise ValueError("ai_step function not found after execution")
 
-    # Validate on mock strip
     mock = _MockStrip()
     mock_sandbox = create_sandbox_globals()
     mock_sandbox["set_pixel"] = _mock_set_pixel
@@ -737,13 +533,12 @@ def compile_ai_animation(code):
     except ValueError:
         raise
     except Exception:
-        pass  # runtime test failure is non-fatal; real strip may behave differently
+        pass
 
     return step_fn, sandbox.get("ai_state", {})
 
 
 def make_safe_step(step_fn, error_callback):
-    """Wrap AI step function — stops after 3 consecutive crashes."""
     error_count = [0]
 
     def safe_step(strip):

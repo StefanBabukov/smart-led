@@ -7,8 +7,8 @@ from threading import Event, Lock, Thread
 from rpi_ws281x import PixelStrip
 
 from ai_animations import (
-    call_ollama,
-    call_ollama_edit,
+    generate_animation,
+    edit_animation,
     compile_ai_animation,
     delete_ai_animation,
     extract_code,
@@ -516,7 +516,7 @@ async def _ai_generate_task(prompt, websocket):
 
     try:
         response_text = await loop.run_in_executor(
-            None, functools.partial(call_ollama, prompt, on_token=on_token)
+            None, functools.partial(generate_animation, prompt, on_token=on_token)
         )
         code = extract_code(response_text)
         if not code:
@@ -596,7 +596,7 @@ async def _ai_edit_task(source_code, edit_prompt, edit_source_id, websocket):
 
     try:
         response_text = await loop.run_in_executor(
-            None, functools.partial(call_ollama_edit, source_code, edit_prompt, on_token=on_token)
+            None, functools.partial(edit_animation, source_code, edit_prompt, on_token=on_token)
         )
         code = extract_code(response_text)
         if not code:
