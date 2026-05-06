@@ -24,6 +24,18 @@ OLLAMA_TIMEOUT = 480  # 8 min — covers 32B models with RAM offload
 OLLAMA_PORT = 11434
 AI_ANIMATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_animations")
 
+# Backend selection: "ollama" (local) or "gemini" (Google AI Studio free tier)
+AI_BACKEND = os.environ.get("AI_BACKEND", "ollama").lower()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_TIMEOUT = 300
+# Gemini 2.5 Pro free tier supports up to 65536 output tokens per request — use it.
+GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "65536"))
+
+# Reference animations fed to Gemini for few-shot quality. Loaded lazily.
+_REFERENCE_FILES = ("pacifica.py", "halloween_scene.py", "xmas_scene.py", "fire.py")
+_reference_cache = None
+
 # Cached Ollama host — discovered once, reused until server restart
 _ollama_host_cache = None
 
@@ -333,9 +345,138 @@ def _ollama_stream(user_prompt, temperature=0.7, on_token=None):
     return "".join(chunks)
 
 
+def _load_reference_animations():
+    """Read reference animation files and format them as a few-shot block.
+
+    Cached after first call. Files that fail to read are silently skipped — the
+    references improve quality but are not strictly required.
+    """
+    global _reference_cache
+    if _reference_cache is not None:
+        return _reference_cache
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    sections = []
+    for fname in _REFERENCE_FILES:
+        path = os.path.join(here, fname)
+        try:
+            with open(path) as f:
+                source = f.read()
+        except OSError:
+            continue
+        sections.append(f"### Reference: {fname}\n```python\n{source}\n```")
+
+    if not sections:
+        _reference_cache = ""
+        return _reference_cache
+
+    _reference_cache = (
+        "\n\n## Reference animations — study technique, do NOT copy verbatim\n\n"
+        "The files below are hand-tuned production animations from this project. "
+        "They use module-level `import` statements and direct `rpi_ws281x` calls "
+        "that are NOT available in your sandbox. DO NOT copy imports or module-level "
+        "state. Instead, study the *techniques* — palette gradients, layered sin "
+        "waves with different bpms/phases, particle physics, multi-stage scene "
+        "composition — and translate them into the required `ai_state = {}` + "
+        "`def ai_step(strip):` form using only the helpers listed above.\n\n"
+        + "\n\n".join(sections)
+    )
+    return _reference_cache
+
+
+# ---------------------------------------------------------------------------
+# Gemini HTTP client (Google AI Studio free tier)
+# ---------------------------------------------------------------------------
+
+
+def _gemini_stream(user_prompt, temperature=0.7, on_token=None):
+    """Send a streaming request to Gemini. Returns full generated text."""
+    if not GEMINI_API_KEY:
+        raise ConnectionError(
+            "GEMINI_API_KEY is not set. Get a free key at "
+            "https://aistudio.google.com/apikey and export GEMINI_API_KEY=..."
+        )
+
+    system_text = SYSTEM_PROMPT + _load_reference_animations()
+
+    payload = json.dumps({
+        "system_instruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
+        },
+    }).encode()
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
+    )
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    chunks = []
+    token_count = 0
+    try:
+        with urllib.request.urlopen(req, timeout=GEMINI_TIMEOUT) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                for cand in obj.get("candidates", []):
+                    for part in cand.get("content", {}).get("parts", []):
+                        text = part.get("text", "")
+                        if text:
+                            chunks.append(text)
+                            token_count += 1
+                            if on_token and token_count % 10 == 0:
+                                on_token(token_count, "".join(chunks[-50:]))
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        raise ConnectionError(
+            f"Gemini API error {exc.code}: {exc.reason}. {body}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise ConnectionError(f"Gemini API unreachable: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise TimeoutError("Gemini generation timed out.") from exc
+
+    return "".join(chunks)
+
+
+# ---------------------------------------------------------------------------
+# Backend dispatch — public entrypoints used by server.py
+# ---------------------------------------------------------------------------
+
+
+def _generate(user_prompt, temperature, on_token):
+    if AI_BACKEND == "gemini":
+        return _gemini_stream(user_prompt, temperature=temperature, on_token=on_token)
+    return _ollama_stream(user_prompt, temperature=temperature, on_token=on_token)
+
+
 def call_ollama(user_prompt, on_token=None):
-    """Generate a new animation from a natural-language prompt."""
-    return _ollama_stream(
+    """Generate a new animation from a natural-language prompt.
+
+    Name preserved for backward compatibility with server.py; routes to whichever
+    backend AI_BACKEND selects.
+    """
+    return _generate(
         f"Create an LED animation: {user_prompt}",
         temperature=0.7,
         on_token=on_token,
@@ -350,7 +491,7 @@ def call_ollama_edit(existing_code, edit_prompt, on_token=None):
         "Output ONLY the modified Python code. "
         "Preserve the ai_state = {} and def ai_step(strip): structure exactly."
     )
-    return _ollama_stream(prompt, temperature=0.5, on_token=on_token)
+    return _generate(prompt, temperature=0.5, on_token=on_token)
 
 
 # ---------------------------------------------------------------------------
