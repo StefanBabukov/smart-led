@@ -18,7 +18,7 @@ from led_operations import fade_to_black, fill_all, get_pixel, set_pixel
 # ---------------------------------------------------------------------------
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_TIMEOUT = 300
 GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "65536"))
 
@@ -289,7 +289,8 @@ def _gemini_stream(user_prompt, temperature=0.7, on_token=None):
             body = exc.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
-        raise ConnectionError(f"Gemini API error {exc.code}: {exc.reason}. {body}") from exc
+        hint = " (rate limit — try again in 60s, or switch to gemini-2.0-flash)" if exc.code == 429 else ""
+        raise ConnectionError(f"Gemini API error {exc.code}: {exc.reason}{hint}. {body}") from exc
     except urllib.error.URLError as exc:
         raise ConnectionError(f"Gemini unreachable: {exc.reason}") from exc
     except TimeoutError as exc:
@@ -563,6 +564,9 @@ def _sanitize_filename(name):
     return re.sub(r"[^a-z0-9_]", "", name.lower().replace(" ", "_"))[:30]
 
 
+_MAX_SAVED_ANIMATIONS = 100
+
+
 def save_ai_animation(name, prompt, code):
     os.makedirs(AI_ANIMATIONS_DIR, exist_ok=True)
     animation_id = uuid.uuid4().hex[:8]
@@ -577,6 +581,12 @@ def save_ai_animation(name, prompt, code):
     filename = f"{safe_name}_{animation_id}.json"
     with open(os.path.join(AI_ANIMATIONS_DIR, filename), "w") as f:
         json.dump(metadata, f, indent=2)
+
+    # Prune oldest if over the cap so the SD card doesn't accumulate forever
+    existing = load_all_ai_animations()
+    if len(existing) > _MAX_SAVED_ANIMATIONS:
+        for old in existing[:len(existing) - _MAX_SAVED_ANIMATIONS]:
+            delete_ai_animation(old["id"])
     return metadata
 
 
