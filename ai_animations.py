@@ -12,6 +12,7 @@ from datetime import datetime
 
 from animations import blend_colors, clamp, monotonic_millis, scale_color
 from led_operations import fade_to_black, fill_all, get_pixel, set_pixel
+from config import LED_COUNT
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -32,7 +33,7 @@ _reference_cache = None
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are a LED animation programmer. Write Python animations for a 300-LED \
+You are a LED animation programmer. Write Python animations for a __LED_COUNT__-LED \
 WS2812B strip running at 50 FPS.
 
 ## Strict output rules
@@ -43,7 +44,7 @@ WS2812B strip running at 50 FPS.
 - Do NOT import anything. Do NOT call strip.show().
 - Only these are pre-imported and in scope:
     math, random, time (use time.monotonic() for timing)
-    set_pixel(strip, i, r, g, b)  # i: 0-299, rgb: 0-255 int
+    set_pixel(strip, i, r, g, b)  # i: 0-__LED_MAX_IDX__, rgb: 0-255 int
     fill_all(strip, r, g, b)
     fade_to_black(strip, i, fade_value)
     get_pixel(strip, i) -> (r, g, b)
@@ -51,7 +52,7 @@ WS2812B strip running at 50 FPS.
     blend_colors(c1, c2, t) -> (r,g,b)  # t: 0.0-1.0
     scale_color(c, f) -> (r,g,b)  # f: 0.0-1.0
     monotonic_millis() -> int
-- strip.numPixels() == 300. Cache any pre-computed lists in ai_state.
+- strip.numPixels() == __LED_COUNT__. Cache any pre-computed lists in ai_state.
 - Always set pixels to non-zero values. Never leave all LEDs black.
 
 ## Technique examples — study these carefully, create your own techniques and be a professional light engineer. use complex math to do complex operations.
@@ -185,7 +186,7 @@ def ai_step(strip):
         else:       rgb = (c, 0, x)
         set_pixel(strip, i, clamp(rgb[0]*255), clamp(rgb[1]*255), clamp(rgb[2]*255))
     ai_state["offset"] += 1.5
-"""
+""".replace("__LED_COUNT__", str(LED_COUNT)).replace("__LED_MAX_IDX__", str(LED_COUNT - 1))
 
 # ---------------------------------------------------------------------------
 # Reference animations — loaded once, injected into every prompt
@@ -415,7 +416,7 @@ def validate_code(code):
 
 
 class _MockStrip:
-    def __init__(self, n=300):
+    def __init__(self, n=LED_COUNT):
         self._n = n
         self._pixels = [(0, 0, 0)] * n
         self._any_nonblack = False

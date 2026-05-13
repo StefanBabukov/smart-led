@@ -14,15 +14,7 @@ from color_bounce import color_bounce_step
 from led_operations import set_all
 from halloween_scene import halloween_scene_step, reset_halloween_scene_state
 from xmas_scene import xmas_scene_step, reset_xmas_scene_state  # Import Christmas animation
-
-# LED strip configuration
-LED_COUNT = 300        # Number of LED pixels.
-LED_GPIO_PIN = 18           # GPIO pin connected to the pixels (must support PWM!).
-LED_FREQ_HZ = 800000   # LED signal frequency in hertz (usually 800khz)
-LED_DMA = 10           # DMA channel to use for generating signal (try 10)
-LED_BRIGHTNESS = 255   # Set to 0 for darkest and 255 for brightest
-LED_INVERT = False     # True to invert the signal (when using NPN transistor level shift)
-LED_CHANNEL = 0       # Set to 1 for GPIOs 13,19,41,45,53
+from config import LED_COUNT, LED_GPIO_PIN, LED_FREQ_HZ, LED_DMA, LED_BRIGHTNESS, LED_INVERT, LED_CHANNEL
 
 effect_stop_event = Event()
 

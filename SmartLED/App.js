@@ -150,6 +150,8 @@ export default function App() {
   const brightnessReleaseTimer = useRef(null);
   const lastBrightnessValue = useRef(null);
 
+  const [numLeds, setNumLeds] = useState(NUM_LEDS);
+
   // Free paint state
   const [freePaintMode, setFreePaintMode] = useState(false);
   const [ledColors, setLedColors] = useState(
@@ -263,6 +265,14 @@ export default function App() {
         const data = JSON.parse(e.data);
         if (data.type === 'state') {
           setLedState(data);
+          if (data.led_count) {
+            setNumLeds(prev => {
+              if (prev !== data.led_count) {
+                setLedColors(Array.from({ length: data.led_count }, () => ({ r: 0, g: 0, b: 0 })));
+              }
+              return data.led_count;
+            });
+          }
           // Sync AI state from server broadcasts
           if (data.ai_generating !== undefined) setAiGenerating(data.ai_generating);
           if (data.ai_previewing !== undefined) setAiPreviewing(data.ai_previewing);
@@ -596,7 +606,7 @@ export default function App() {
   const paintStripRange = useCallback((fromIndex, toIndex, forceSend = false) => {
     const { r, g, b } = paintColor;
     const brushStart = Math.max(0, Math.min(fromIndex, toIndex) - FREE_PAINT_BRUSH_RADIUS);
-    const brushEnd = Math.min(NUM_LEDS - 1, Math.max(fromIndex, toIndex) + FREE_PAINT_BRUSH_RADIUS);
+    const brushEnd = Math.min(numLeds - 1, Math.max(fromIndex, toIndex) + FREE_PAINT_BRUSH_RADIUS);
 
     setLedColors(prev => {
       const next = [...prev];
@@ -619,14 +629,14 @@ export default function App() {
     }
 
     flushPendingPaint(forceSend);
-  }, [flushPendingPaint, paintColor]);
+  }, [flushPendingPaint, paintColor, numLeds]);
 
   const getStripLedIndex = useCallback((evt) => {
     const x = evt.nativeEvent.locationX;
     const width = stripBarLayout.current.width;
     if (width <= 0) return null;
-    return Math.floor(Math.max(0, Math.min(NUM_LEDS - 1, (x / width) * NUM_LEDS)));
-  }, []);
+    return Math.floor(Math.max(0, Math.min(numLeds - 1, (x / width) * numLeds)));
+  }, [numLeds]);
 
   const handleStripTouch = useCallback((evt, forceSend = false) => {
     const ledIndex = getStripLedIndex(evt);
@@ -653,11 +663,11 @@ export default function App() {
   }, [endInteractiveGesture, flushPendingPaint, handleStripTouch]);
 
   const resetFreePaint = useCallback(() => {
-    const black = Array.from({ length: NUM_LEDS }, () => ({ r: 0, g: 0, b: 0 }));
+    const black = Array.from({ length: numLeds }, () => ({ r: 0, g: 0, b: 0 }));
     setLedColors(black);
     pendingPaintRange.current = null;
-    send('set_pixel_range', { start: 0, end: NUM_LEDS - 1, r: 0, g: 0, b: 0 }, { silent: true });
-  }, [send]);
+    send('set_pixel_range', { start: 0, end: numLeds - 1, r: 0, g: 0, b: 0 }, { silent: true });
+  }, [send, numLeds]);
 
   // --- Derived values ---
   const displayBrightness = localBrightness !== null ? localBrightness : ledState.brightness;
@@ -692,7 +702,7 @@ export default function App() {
   // Compute strip LED width to fit screen
   const stripPadding = 40; // account for parent padding
   const stripWidth = SCREEN_WIDTH - stripPadding;
-  const ledWidth = stripWidth / NUM_LEDS;
+  const ledWidth = stripWidth / numLeds;
 
   return (
     <SafeAreaView style={styles.container}>

@@ -27,6 +27,7 @@ from led_operations import fill_all, get_pixel, set_pixel
 from pacifica import pacifica_step
 from static_mode import StaticMode
 from xmas_scene import reset_xmas_scene_state, xmas_scene_step
+from config import LED_COUNT, LED_GPIO_PIN, LED_FREQ_HZ, LED_DMA, LED_BRIGHTNESS, LED_INVERT, LED_CHANNEL
 
 try:
     import websockets
@@ -43,14 +44,6 @@ logging.basicConfig(
 log = logging.getLogger("smart-led")
 
 
-# LED strip configuration
-LED_COUNT = 300
-LED_GPIO_PIN = 18  # PWM pin; setup.sh disables onboard audio to avoid animation flicker.
-LED_FREQ_HZ = 800000
-LED_DMA = 10
-LED_BRIGHTNESS = 255
-LED_INVERT = False
-LED_CHANNEL = 0
 BALL_COUNT_MIN = 1
 BALL_COUNT_MAX = 12
 
@@ -425,6 +418,7 @@ mode_commands = {
 def get_state_dict():
     state = {
         "type": "state",
+        "led_count": LED_COUNT,
         "mode": current_mode,
         "effect_index": selected_effect,
         "brightness": current_brightness,
